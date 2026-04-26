@@ -1,0 +1,79 @@
+{
+  "keywords": [
+    "data security",
+    "privacy protection",
+    "privacy preserving",
+    "differential privacy",
+    "federated learning",
+    "secure multiparty computation",
+    "homomorphic encryption",
+    "zero-knowledge",
+    "confidential computing",
+    "数据安全",
+    "隐私保护",
+    "隐私计算",
+    "个人信息保护",
+    "数据治理",
+    "联邦学习",
+    "差分隐私",
+    "安全多方计算",
+    "同态加密",
+    "零知识证明",
+    "大模型安全"
+  ],
+  "hot_terms": [
+    "LLM",
+    "large language model",
+    "RAG",
+    "synthetic data",
+    "attack",
+    "leakage",
+    "compliance",
+    "cross-border",
+    "大模型",
+    "人工智能",
+    "生成式",
+    "数据出境",
+    "合规",
+    "泄露",
+    "攻击",
+    "治理"
+  ],
+  "bing_queries": [
+    {
+      "name": "CAICT",
+      "type": "domestic_authority",
+      "query": "site:caict.ac.cn (数据安全 OR 隐私保护 OR 个人信息保护 OR 隐私计算) (研究 OR 报告 OR 白皮书 OR 前沿)"
+    },
+    {
+      "name": "TC260",
+      "type": "domestic_authority",
+      "query": "site:tc260.org.cn (数据安全 OR 隐私保护 OR 个人信息保护 OR 数据治理)"
+    },
+    {
+      "name": "CCF",
+      "type": "domestic_authority",
+      "query": "site:ccf.org.cn (数据安全 OR 隐私保护 OR 隐私计算 OR 联邦学习 OR 差分隐私)"
+    },
+    {
+      "name": "WeChat authority",
+      "type": "wechat_authority",
+      "query": "site:mp.weixin.qq.com (数据安全 OR 隐私保护 OR 个人信息保护 OR 隐私计算) (中国信通院 OR CCF OR 中国网络空间安全协会 OR 数据安全推进计划)"
+    },
+    {
+      "name": "IEEE Xplore",
+      "type": "international_academic",
+      "query": "site:ieeexplore.ieee.org (\"privacy preserving\" OR \"data security\" OR \"differential privacy\" OR \"federated learning\")"
+    },
+    {
+      "name": "ACM Digital Library",
+      "type": "international_academic",
+      "query": "site:dl.acm.org (\"privacy preserving\" OR \"data security\" OR \"differential privacy\" OR \"federated learning\")"
+    },
+    {
+      "name": "USENIX",
+      "type": "international_academic",
+      "query": "site:usenix.org (\"privacy preserving\" OR \"data security\" OR \"differential privacy\" OR \"federated learning\")"
+    }
+  ]
+}
