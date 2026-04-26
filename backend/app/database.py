@@ -80,12 +80,76 @@ def init_db() -> None:
             );
             """
         )
+        ensure_article_columns(conn)
+
+
+def ensure_article_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(articles)").fetchall()}
+    if "translated_title" not in columns:
+        conn.execute("ALTER TABLE articles ADD COLUMN translated_title TEXT DEFAULT ''")
+    if "translated_summary" not in columns:
+        conn.execute("ALTER TABLE articles ADD COLUMN translated_summary TEXT DEFAULT ''")
+    if "ai_recommendation" not in columns:
+        conn.execute("ALTER TABLE articles ADD COLUMN ai_recommendation TEXT DEFAULT ''")
 
 
 def row_to_article(row: sqlite3.Row) -> dict:
     data = dict(row)
     data["reasons"] = json.loads(data.pop("reasons_json") or "[]")
+    recommendation = data.get("ai_recommendation") or "[]"
+    try:
+        data["ai_recommendation"] = json.loads(recommendation)
+    except json.JSONDecodeError:
+        data["ai_recommendation"] = [recommendation] if recommendation else []
     return data
+
+
+def update_ai_content(article_id: int, translated_title: str, translated_summary: str, ai_recommendation: list[str]) -> dict | None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE articles
+            SET translated_title = ?, translated_summary = ?, ai_recommendation = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (translated_title, translated_summary, json.dumps(ai_recommendation, ensure_ascii=False), now(), article_id),
+        )
+        row = conn.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()
+        return row_to_article(row) if row else None
+
+
+def list_articles_needing_ai(
+    status: str | None = "candidate",
+    limit: int = 100,
+    require_title: bool = True,
+    require_summary: bool = True,
+    require_recommendation: bool = True,
+) -> list[dict]:
+    needs = []
+    if require_title:
+        needs.append("(translated_title IS NULL OR translated_title = '')")
+    if require_summary:
+        needs.append("(translated_summary IS NULL OR translated_summary = '')")
+    if require_recommendation:
+        needs.append("(ai_recommendation IS NULL OR ai_recommendation = '' OR ai_recommendation = '[]')")
+    clauses = [f"({' OR '.join(needs)})"] if needs else ["1 = 1"]
+    params: list[str | int] = []
+    if status and status != "all":
+        clauses.insert(0, "status = ?")
+        params.append(status)
+    params.append(limit)
+    where = " AND ".join(clauses)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT * FROM articles
+            WHERE {where}
+            ORDER BY score DESC, published DESC, updated_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [row_to_article(row) for row in rows]
 
 
 def all_seen(conn: sqlite3.Connection) -> tuple[set[str], set[str]]:
@@ -197,8 +261,8 @@ def list_articles(status: str | None = None, query: str | None = None) -> list[d
         clauses.append("status = ?")
         params.append(status)
     if query:
-        clauses.append("(title LIKE ? OR summary LIKE ? OR source LIKE ?)")
-        params.extend([f"%{query}%", f"%{query}%", f"%{query}%"])
+        clauses.append("(title LIKE ? OR translated_title LIKE ? OR summary LIKE ? OR source LIKE ?)")
+        params.extend([f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"])
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with connect() as conn:
         rows = conn.execute(
@@ -335,4 +399,3 @@ def export_selected_markdown(mark_shared: bool) -> dict:
         for item in articles:
             update_status(item["id"], "shared")
     return {"filename": f"privacy-paper-selected-{today}.md", "markdown": markdown, "count": len(articles)}
-

@@ -4,6 +4,7 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .ai_client import enrich_article as enrich_article_with_ai
 from .collector import absorb_seen_text, collect_candidates, load_config, relevant, save_config, score_candidate
 from .database import (
     VALID_STATUSES,
@@ -13,8 +14,10 @@ from .database import (
     get_article,
     init_db,
     list_articles,
+    list_articles_needing_ai,
     list_logs,
     save_candidates,
+    update_ai_content,
     update_status,
 )
 
@@ -33,6 +36,42 @@ class StatusRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     mark_shared: bool = False
+
+
+class AIConfig(BaseModel):
+    provider: str = ""
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    max_input_chars: int = Field(default=6000, ge=1000, le=30000)
+
+
+class MachineTranslationConfig(BaseModel):
+    enabled: bool = False
+    provider: str = "baidu"
+    base_url: str = ""
+    app_id: str = ""
+    secret_key: str = ""
+    api_key: str = ""
+    source_lang: str = "en"
+    target_lang: str = "zh"
+
+
+class EnrichRequest(BaseModel):
+    article_id: int
+    ai: AIConfig = Field(default_factory=AIConfig)
+    translation: MachineTranslationConfig | None = None
+
+
+class EnrichBatchRequest(BaseModel):
+    ai: AIConfig = Field(default_factory=AIConfig)
+    translation: MachineTranslationConfig | None = None
+    status: str | None = "candidate"
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+def has_ai_config(config: AIConfig) -> bool:
+    return bool(config.api_key.strip() and config.base_url.strip() and config.model.strip())
 
 
 app = FastAPI(title="Privacy Paper Dashboard API", version="1.0.0")
@@ -124,6 +163,61 @@ def export_markdown(payload: ExportRequest) -> dict:
     return export_selected_markdown(payload.mark_shared)
 
 
+@app.post("/api/ai/enrich")
+def enrich_article(payload: EnrichRequest) -> dict:
+    article = get_article(payload.article_id)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+    try:
+        result = enrich_article_with_ai(
+            article,
+            payload.ai.dict(),
+            payload.translation.dict() if payload.translation else None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI enrich failed: {exc}") from exc
+    updated = update_ai_content(
+        payload.article_id,
+        result["translated_title"],
+        result["translated_summary"],
+        result["ai_recommendation"],
+    )
+    return {"ok": True, "article": updated}
+
+
+@app.post("/api/ai/enrich-batch")
+def enrich_batch(payload: EnrichBatchRequest) -> dict:
+    if payload.status and payload.status != "all" and payload.status not in VALID_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    articles = list_articles_needing_ai(
+        payload.status,
+        payload.limit,
+        require_title=True,
+        require_summary=True,
+        require_recommendation=has_ai_config(payload.ai),
+    )
+    stats = {"total": len(articles), "processed": 0, "failed": 0, "skipped": 0}
+    failures = []
+    for article in articles:
+        try:
+            result = enrich_article_with_ai(
+                article,
+                payload.ai.dict(),
+                payload.translation.dict() if payload.translation else None,
+            )
+            update_ai_content(
+                article["id"],
+                result["translated_title"],
+                result["translated_summary"],
+                result["ai_recommendation"],
+            )
+            stats["processed"] += 1
+        except Exception as exc:
+            stats["failed"] += 1
+            failures.append({"id": article["id"], "title": article["title"], "error": str(exc)})
+    return {"ok": stats["failed"] == 0, "stats": stats, "failures": failures}
+
+
 @app.get("/api/logs")
 def logs() -> list[dict]:
     return list_logs()
@@ -138,4 +232,3 @@ def get_config() -> dict:
 def put_config(config: dict) -> dict:
     save_config(config)
     return {"ok": True, "config": load_config()}
-

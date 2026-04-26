@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import http.client
 import html
 import json
 import re
+import ssl
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -17,6 +20,7 @@ from typing import Iterable
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "sources.json"
+REFERENCE_SOURCES_PATH = PROJECT_ROOT / "参考论文来源列表.md"
 
 
 DEFAULT_CONFIG = {
@@ -145,6 +149,8 @@ DEFAULT_CONFIG = {
             "query": 'site:usenix.org ("privacy preserving" OR "data security" OR "differential privacy" OR "federated learning")',
         },
     ],
+    "reference_source_query_limit": 20,
+    "reference_source_query_rows": 5,
 }
 
 
@@ -161,7 +167,7 @@ class Candidate:
     reasons: list[str] = field(default_factory=list)
 
 
-def fetch_text(url: str, timeout: int = 25) -> str:
+def fetch_text(url: str, timeout: int = 25, retries: int = 3) -> str:
     req = urllib.request.Request(
         url,
         headers={
@@ -169,10 +175,22 @@ def fetch_text(url: str, timeout: int = 25) -> str:
             "Accept": "application/rss+xml, application/atom+xml, application/json, text/html, */*",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
-        charset = resp.headers.get_content_charset() or "utf-8"
-        return raw.decode(charset, errors="replace")
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                charset = resp.headers.get_content_charset() or "utf-8"
+                return raw.decode(charset, errors="replace")
+        except (http.client.IncompleteRead, ssl.SSLError, urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+            if attempt < retries - 1:
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            raise
+    if last_error:
+        raise last_error
+    return ""
 
 
 def strip_tags(value: str) -> str:
@@ -267,11 +285,65 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> dict:
         user_config = json.loads(path.read_text(encoding="utf-8"))
         for key, value in user_config.items():
             config[key] = value
+    reference_sources = load_reference_sources()
+    config["reference_sources"] = reference_sources
+    config["authority_venues"] = merge_unique(
+        config.get("authority_venues", []),
+        [item["full_name"] for item in reference_sources],
+        [item["alias"] for item in reference_sources],
+    )
     return config
 
 
 def save_config(config: dict, path: Path = DEFAULT_CONFIG_PATH) -> None:
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def merge_unique(*groups: Iterable[str]) -> list[str]:
+    seen = set()
+    results = []
+    for group in groups:
+        for value in group:
+            value = (value or "").strip()
+            if not value:
+                continue
+            key = value.casefold()
+            if key not in seen:
+                seen.add(key)
+                results.append(value)
+    return results
+
+
+def clean_table_cell(value: str) -> str:
+    value = re.sub(r"<[^>]+>", "", value)
+    value = value.replace("&amp;", "&")
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def load_reference_sources(path: Path = REFERENCE_SOURCES_PATH) -> list[dict]:
+    if not path.exists():
+        return []
+    sources = []
+    for raw_line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("|") or "---" in line:
+            continue
+        cells = [clean_table_cell(cell) for cell in line.strip("|").split("|")]
+        if len(cells) < 4 or cells[0] in {"一级分类", "ä¸€çº§åˆ†ç±»"}:
+            continue
+        category, tier, full_name, alias = cells[:4]
+        if not full_name or full_name == "全称":
+            continue
+        sources.append(
+            {
+                "category": category,
+                "tier": tier,
+                "full_name": full_name,
+                "alias": alias,
+            }
+        )
+    return sources
 
 
 def tag_local_name(tag: str) -> str:
@@ -344,6 +416,30 @@ def fetch_arxiv(max_results: int) -> list[Candidate]:
     return results
 
 
+def crossref_item_to_candidate(item: dict) -> Candidate | None:
+    title = " ".join(item.get("title") or []).strip()
+    doi = item.get("DOI", "")
+    link = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
+    container = ", ".join(item.get("container-title") or [])
+    date_parts = (
+        item.get("published-print", {}).get("date-parts")
+        or item.get("published-online", {}).get("date-parts")
+        or item.get("published", {}).get("date-parts")
+        or []
+    )
+    published = ""
+    if date_parts and date_parts[0]:
+        parts = date_parts[0] + [1, 1]
+        published = f"{parts[0]:04d}-{parts[1]:02d}-{parts[2]:02d}"
+    authors = "; ".join(
+        " ".join(filter(None, [a.get("given", ""), a.get("family", "")]))
+        for a in item.get("author", [])[:6]
+    )
+    if title and link:
+        return Candidate(title, link, container or "Crossref", "international_academic", published, container, authors)
+    return None
+
+
 def fetch_crossref(rows: int, days: int) -> list[Candidate]:
     start = (dt.date.today() - dt.timedelta(days=days)).isoformat()
     queries = [
@@ -365,26 +461,47 @@ def fetch_crossref(rows: int, days: int) -> list[Candidate]:
         )
         data = json.loads(fetch_text(url))
         for item in data.get("message", {}).get("items", []):
-            title = " ".join(item.get("title") or []).strip()
-            doi = item.get("DOI", "")
-            link = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
-            container = ", ".join(item.get("container-title") or [])
-            date_parts = (
-                item.get("published-print", {}).get("date-parts")
-                or item.get("published-online", {}).get("date-parts")
-                or item.get("published", {}).get("date-parts")
-                or []
-            )
-            published = ""
-            if date_parts and date_parts[0]:
-                parts = date_parts[0] + [1, 1]
-                published = f"{parts[0]:04d}-{parts[1]:02d}-{parts[2]:02d}"
-            authors = "; ".join(
-                " ".join(filter(None, [a.get("given", ""), a.get("family", "")]))
-                for a in item.get("author", [])[:6]
-            )
-            if title and link:
-                results.append(Candidate(title, link, container or "Crossref", "international_academic", published, container, authors))
+            candidate = crossref_item_to_candidate(item)
+            if candidate:
+                results.append(candidate)
+        time.sleep(0.8)
+    return results
+
+
+def fetch_reference_source_crossref(config: dict, days: int) -> list[Candidate]:
+    start = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    sources = config.get("reference_sources", [])
+    enabled_sources = config.get("enabled_reference_sources")
+    if isinstance(enabled_sources, list):
+        enabled_names = {str(item).strip().casefold() for item in enabled_sources if str(item).strip()}
+        if enabled_names:
+            sources = [source for source in sources if (source.get("full_name") or "").casefold() in enabled_names]
+        else:
+            sources = []
+    sources = sources[: int(config.get("reference_source_query_limit", 20))]
+    rows = int(config.get("reference_source_query_rows", 5))
+    results = []
+    for source in sources:
+        full_name = source.get("full_name", "")
+        if not full_name:
+            continue
+        url = "https://api.crossref.org/works?" + urllib.parse.urlencode(
+            {
+                "query.container-title": full_name,
+                "query.bibliographic": "privacy security data",
+                "filter": f"from-pub-date:{start}",
+                "sort": "published",
+                "order": "desc",
+                "rows": str(rows),
+            }
+        )
+        data = json.loads(fetch_text(url))
+        for item in data.get("message", {}).get("items", []):
+            candidate = crossref_item_to_candidate(item)
+            if candidate:
+                candidate.source = candidate.source or full_name
+                candidate.reasons.append(f"参考来源：{source.get('alias') or full_name}")
+                results.append(candidate)
         time.sleep(0.8)
     return results
 
@@ -506,6 +623,7 @@ def collect_candidates(config: dict, rows: int, days: int) -> tuple[list[Candida
         ("arXiv", lambda: fetch_arxiv(rows)),
         ("IACR ePrint", fetch_iacr),
         ("Crossref", lambda: fetch_crossref(rows, days)),
+        ("Reference Sources", lambda: fetch_reference_source_crossref(config, days)),
         ("Bing RSS", lambda: fetch_bing_rss(config, rows)),
     ]
     for name, func in collectors:
@@ -517,4 +635,3 @@ def collect_candidates(config: dict, rows: int, days: int) -> tuple[list[Candida
             source_counts[name] = 0
             failures.append(f"{name} 抓取失败：{exc}")
     return candidates, source_counts, failures
-
