@@ -254,6 +254,66 @@ h1 {
   border-bottom: 1px solid var(--line);
 }
 
+.toolstripFilters {
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filterStack {
+  display: grid;
+  gap: 10px;
+  flex: 1 1 560px;
+  min-width: 0;
+}
+
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filterRow select {
+  min-width: 128px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(244, 250, 247, 0.96)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23687b74' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, no-repeat;
+  background-position: 0 0, right 12px center;
+  background-size: auto, 12px 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  color: var(--text);
+  padding: 0 34px 0 12px;
+  appearance: none;
+  outline: 0;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.filterRow select:hover {
+  border-color: rgba(31, 159, 122, 0.32);
+  background-color: #fbfefd;
+}
+
+.filterRow select:focus {
+  border-color: rgba(31, 159, 122, 0.48);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    0 0 0 3px rgba(31, 159, 122, 0.12);
+}
+
+.toolstripFilters .exportBox,
+.toolstripFilters .importBox {
+  flex: 0 0 auto;
+}
+
+.toolstripFilters .exportBox {
+  min-height: 38px;
+  padding: 0 2px;
+}
+
 .searchBox {
   display: flex;
   align-items: center;
@@ -278,6 +338,17 @@ h1 {
   gap: 12px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.importBox {
+  display: grid;
+  grid-template-columns: minmax(260px, 440px) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.importUrlBox {
+  width: 100%;
 }
 
 .articleList {
@@ -329,7 +400,8 @@ h1 {
   line-height: 1.35;
 }
 
-.originalTitle {
+.originalTitle,
+.translatedTitle {
   margin: -2px 0 8px;
   color: var(--muted);
   font-size: 12px;
@@ -343,7 +415,8 @@ h1 {
   line-height: 1.55;
 }
 
-.articleMain .originalTitle {
+.articleMain .originalTitle,
+.articleMain .translatedTitle {
   margin: -3px 0 8px;
   color: #6b7f77;
   font-size: 12px;
@@ -794,5 +867,9 @@ h1 {
 
   .metrics {
     display: none;
+  }
+
+  .filterStack {
+    flex-basis: 100%;
   }
 }

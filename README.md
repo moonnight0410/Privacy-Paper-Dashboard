@@ -38,9 +38,9 @@ start.bat     Windows 一键启动入口
 - 创建 `.venv` 后端虚拟环境。
 - 安装 `backend/requirements.txt`。
 - 安装 `frontend/package.json` 依赖。
+- 构建前端静态资源。
 - 启动 FastAPI：`http://127.0.0.1:8000`
-- 启动 Vite：`http://127.0.0.1:5173`
-- 打开浏览器访问前端。
+- 打开浏览器访问工作台。
 
 ## 手动启动
 
@@ -53,17 +53,17 @@ cd backend
 ..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-前端：
+前端构建：
 
 ```powershell
 cd frontend
 npm install
-npm run dev
+npm run build
 ```
 
 ## 使用流程
 
-1. 打开前端工作台。
+1. 打开工作台：`http://127.0.0.1:8000/`。
 2. 点击“抓取今日候选”，系统会调用后端抓取各来源并写入 SQLite。
 3. 在“今日候选”中查看评分、来源、日期和推荐理由。
 4. 点击条目查看详情，使用按钮切换候选、待读、入选、已分享或驳回。
@@ -113,4 +113,3 @@ git add .
 git commit -m "Initial privacy paper dashboard"
 gh repo create privacy-paper-dashboard --public --source . --remote origin --push
 ```
-

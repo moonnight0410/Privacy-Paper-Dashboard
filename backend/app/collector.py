@@ -13,6 +13,7 @@ import urllib.error
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
 
@@ -149,9 +150,147 @@ DEFAULT_CONFIG = {
             "query": 'site:usenix.org ("privacy preserving" OR "data security" OR "differential privacy" OR "federated learning")',
         },
     ],
-    "reference_source_query_limit": 20,
-    "reference_source_query_rows": 5,
+    "enabled_fetch_sources": [
+        "ieee_sp",
+        "acm_ccs",
+        "usenix_security",
+        "ndss",
+        "crypto",
+        "asiacrypt",
+        "popets",
+        "ieee_tifs",
+        "acm_tops",
+        "journal_cryptology",
+        "ieee_tdsc",
+    ],
+    "fetch_rows": 12,
+    "fetch_days": 1095,
+    "fetch_min_score": 45,
+    "fetch_max_age_days": 1095,
 }
+
+
+FETCH_SOURCE_CATALOG = [
+    {
+        "key": "ieee_sp",
+        "name": "IEEE Symposium on Security and Privacy",
+        "category": "conference",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S4363606603",
+            "https://openalex.org/S4306418833",
+        ],
+    },
+    {
+        "key": "acm_ccs",
+        "name": "ACM Conference on Computer and Communications Security",
+        "category": "conference",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S4363608815",
+            "https://openalex.org/S4306417956",
+        ],
+    },
+    {
+        "key": "usenix_security",
+        "name": "USENIX Security Symposium",
+        "category": "conference",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S4306421123",
+        ],
+    },
+    {
+        "key": "ndss",
+        "name": "Network and Distributed System Security Symposium",
+        "category": "conference",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S4306420590",
+        ],
+    },
+    {
+        "key": "crypto",
+        "name": "International Cryptology Conference",
+        "category": "conference",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S4306419976",
+        ],
+    },
+    {
+        "key": "asiacrypt",
+        "name": "International Conference on the Theory and Application of Cryptology and Information Security",
+        "category": "conference",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S4306419886",
+        ],
+    },
+    {
+        "key": "popets",
+        "name": "Proceedings on Privacy Enhancing Technologies",
+        "category": "journal",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S4210183172",
+        ],
+    },
+    {
+        "key": "ieee_tifs",
+        "name": "IEEE Transactions on Information Forensics and Security",
+        "category": "journal",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S61310614",
+        ],
+    },
+    {
+        "key": "acm_tops",
+        "name": "ACM Transactions on Privacy and Security",
+        "category": "journal",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S4210174050",
+        ],
+    },
+    {
+        "key": "journal_cryptology",
+        "name": "Journal of Cryptology",
+        "category": "journal",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S190936789",
+        ],
+    },
+    {
+        "key": "ieee_tkde",
+        "name": "IEEE Transactions on Knowledge and Data Engineering",
+        "category": "journal",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S30698027",
+        ],
+    },
+    {
+        "key": "acm_tods",
+        "name": "ACM Transactions on Database Systems",
+        "category": "journal",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S90119964",
+        ],
+    },
+    {
+        "key": "ieee_tdsc",
+        "name": "IEEE Transactions on Dependable and Secure Computing",
+        "category": "journal",
+        "tier": "Tier 1",
+        "source_ids": [
+            "https://openalex.org/S133795288",
+        ],
+    },
+]
 
 
 @dataclass
@@ -200,6 +339,206 @@ def strip_tags(value: str) -> str:
     return html.unescape(re.sub(r"\s+", " ", value)).strip()
 
 
+class PageMetadataParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.meta: dict[str, list[str]] = {}
+        self.title_parts: list[str] = []
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "title":
+            self._in_title = True
+            return
+        if tag.lower() != "meta":
+            return
+        attr_map = {key.lower(): (value or "").strip() for key, value in attrs}
+        name = (attr_map.get("name") or attr_map.get("property") or "").lower()
+        content = attr_map.get("content", "")
+        if name and content:
+            self.meta.setdefault(name, []).append(strip_tags(content))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title_parts.append(data)
+
+    @property
+    def title(self) -> str:
+        return strip_tags(" ".join(self.title_parts))
+
+
+def first_meta(meta: dict[str, list[str]], *names: str) -> str:
+    for name in names:
+        values = meta.get(name.lower()) or []
+        for value in values:
+            if value.strip():
+                return value.strip()
+    return ""
+
+
+def first_json_string(text: str, *names: str) -> str:
+    for name in names:
+        match = re.search(rf'"{re.escape(name)}"\s*:\s*"((?:\\.|[^"])*)"', text)
+        if not match:
+            continue
+        raw = match.group(1)
+        try:
+            return strip_tags(json.loads(f'"{raw}"'))
+        except json.JSONDecodeError:
+            return strip_tags(raw.replace('\\"', '"'))
+    return ""
+
+
+ACADEMIC_HOSTS = {
+    "arxiv.org": "arXiv",
+    "openreview.net": "OpenReview",
+    "ieeexplore.ieee.org": "IEEE Xplore",
+    "dl.acm.org": "ACM Digital Library",
+    "doi.org": "DOI",
+    "link.springer.com": "Springer",
+    "www.nature.com": "Nature",
+    "www.sciencedirect.com": "ScienceDirect",
+    "www.usenix.org": "USENIX",
+    "www.ndss-symposium.org": "NDSS",
+    "eprint.iacr.org": "IACR ePrint",
+}
+
+ACADEMIC_HOST_SUFFIXES = (
+    "arxiv.org",
+    "openreview.net",
+    "ieee.org",
+    "acm.org",
+    "springer.com",
+    "nature.com",
+    "sciencedirect.com",
+    "usenix.org",
+    "ndss-symposium.org",
+    "iacr.org",
+    "semanticscholar.org",
+)
+
+DOMESTIC_AUTHORITY_SUFFIXES = (
+    "gov.cn",
+    "caict.ac.cn",
+    "tc260.org.cn",
+    "ccf.org.cn",
+)
+
+
+def normalize_import_source_label(source: str, host: str) -> str:
+    source = re.sub(r"\s+", " ", source).strip(" |-")
+    lowered = source.casefold()
+    if lowered in {"arxiv.org", "arxiv"}:
+        return "arXiv"
+    if lowered in {"ieee xplore"} and host.endswith("ieeexplore.ieee.org"):
+        return "IEEE Xplore"
+    return source
+
+
+def infer_import_source(host: str, meta: dict[str, list[str]], raw_text: str = "") -> tuple[str, str]:
+    host = host.lower()
+    source = first_meta(
+        meta,
+        "citation_conference_title",
+        "citation_journal_title",
+        "citation_book_title",
+        "citation_technical_report_institution",
+        "prism.publicationname",
+        "dc.source",
+        "citation_publisher",
+        "og:site_name",
+        "application-name",
+    )
+    if not source and raw_text:
+        source = first_json_string(
+            raw_text,
+            "displayPublicationTitle",
+            "publicationTitle",
+            "journalTitle",
+            "bookTitle",
+        )
+    source = normalize_import_source_label(source, host)
+    if host.endswith("mp.weixin.qq.com"):
+        return source or "微信公众号", "wechat_authority"
+    if source:
+        return source, "international_academic"
+    for domain, label in ACADEMIC_HOSTS.items():
+        if host == domain or host.endswith(f".{domain}"):
+            return label, "international_academic"
+    if any(host == suffix or host.endswith(f".{suffix}") for suffix in DOMESTIC_AUTHORITY_SUFFIXES):
+        return host, "domestic_authority"
+    if any(host == suffix or host.endswith(f".{suffix}") for suffix in ACADEMIC_HOST_SUFFIXES):
+        return host, "international_academic"
+    return host, "search"
+
+
+def candidate_from_url(url: str, config: dict) -> Candidate:
+    parsed = urllib.parse.urlsplit(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL must start with http:// or https://")
+
+    text = fetch_text(url)
+    parser = PageMetadataParser()
+    parser.feed(text[:1_500_000])
+
+    title = first_meta(
+        parser.meta,
+        "citation_title",
+        "dc.title",
+        "dcterms.title",
+        "og:title",
+        "twitter:title",
+    ) or parser.title
+    title = re.sub(r"\s+", " ", title).strip()
+    if not title:
+        raise ValueError("Unable to extract a paper title from this URL")
+
+    summary = first_meta(
+        parser.meta,
+        "citation_abstract",
+        "dc.description",
+        "dcterms.description",
+        "description",
+        "og:description",
+        "twitter:description",
+    )
+    published = parse_date(
+        first_meta(
+            parser.meta,
+            "citation_publication_date",
+            "citation_online_date",
+            "citation_date",
+            "article:published_time",
+            "dc.date",
+            "dcterms.issued",
+        )
+    )
+    authors = "; ".join(parser.meta.get("citation_author", [])[:8]) or first_meta(
+        parser.meta,
+        "dc.creator",
+        "author",
+        "article:author",
+    )
+    source, source_type = infer_import_source(parsed.netloc.lower(), parser.meta, text)
+
+    candidate = Candidate(
+        title=title,
+        url=canonical_url(url),
+        source=source,
+        source_type=source_type,
+        published=published,
+        summary=summary,
+        authors=authors,
+    )
+    score_candidate(candidate, config)
+    candidate.reasons.append("Manual URL import")
+    return candidate
+
+
 def normalize_title(value: str) -> str:
     value = html.unescape(strip_tags(value)).lower()
     value = re.sub(r"https?://\S+", " ", value)
@@ -228,9 +567,22 @@ def canonical_url(value: str) -> str:
     parsed = urllib.parse.urlsplit(html.unescape(value.strip()))
     host = parsed.netloc.lower()
     path = re.sub(r"/+$", "", parsed.path)
+    if host.endswith("arxiv.org"):
+        path = re.sub(r"^/pdf/(.+?)\.pdf$", r"/abs/\1", path)
+        path = re.sub(r"^/html/(.+)$", r"/abs/\1", path)
+        path = re.sub(r"(v\d+)$", "", path)
+    elif host.endswith("ieeexplore.ieee.org"):
+        path = path.replace("/abstract/document/", "/document/")
+    elif host.endswith("dl.acm.org"):
+        path = path.replace("/doi/abs/", "/doi/")
+    elif host == "doi.org":
+        path = path.lower()
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=False)
     if host.endswith("mp.weixin.qq.com"):
         keep = {"__biz", "mid", "idx", "sn"}
+        query_pairs = [(k, v) for k, v in query_pairs if k in keep]
+    elif host.endswith("openreview.net"):
+        keep = {"id", "noteId"}
         query_pairs = [(k, v) for k, v in query_pairs if k in keep]
     else:
         query_pairs = [
@@ -285,6 +637,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> dict:
         user_config = json.loads(path.read_text(encoding="utf-8"))
         for key, value in user_config.items():
             config[key] = value
+    config["fetch_source_catalog"] = json.loads(json.dumps(FETCH_SOURCE_CATALOG, ensure_ascii=False))
     reference_sources = load_reference_sources()
     config["reference_sources"] = reference_sources
     config["authority_venues"] = merge_unique(
@@ -292,6 +645,11 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> dict:
         [item["full_name"] for item in reference_sources],
         [item["alias"] for item in reference_sources],
     )
+    enabled_fetch_sources = config.get("enabled_fetch_sources")
+    if not isinstance(enabled_fetch_sources, list):
+        config["enabled_fetch_sources"] = [item["key"] for item in FETCH_SOURCE_CATALOG]
+    config["fetch_days"] = max(1, min(int(config.get("fetch_days", 1095) or 1095), 1095))
+    config["fetch_max_age_days"] = max(0, min(int(config.get("fetch_max_age_days", 1095) or 1095), 1095))
     return config
 
 
@@ -330,7 +688,12 @@ def load_reference_sources(path: Path = REFERENCE_SOURCES_PATH) -> list[dict]:
         if not line.startswith("|") or "---" in line:
             continue
         cells = [clean_table_cell(cell) for cell in line.strip("|").split("|")]
-        if len(cells) < 4 or cells[0] in {"一级分类", "ä¸€çº§åˆ†ç±»"}:
+        header = cells[0] if cells else ""
+        try:
+            header_fixed = header.encode("latin1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            header_fixed = header
+        if len(cells) < 4 or header in {"一级分类"} or header_fixed == "一级分类":
             continue
         category, tier, full_name, alias = cells[:4]
         if not full_name or full_name == "全称":
@@ -506,6 +869,101 @@ def fetch_reference_source_crossref(config: dict, days: int) -> list[Candidate]:
     return results
 
 
+def rebuild_abstract(inverted_index: dict | None) -> str:
+    if not inverted_index:
+        return ""
+    slots: dict[int, str] = {}
+    for token, positions in inverted_index.items():
+        for position in positions or []:
+            if isinstance(position, int) and position not in slots:
+                slots[position] = token
+    if not slots:
+        return ""
+    return " ".join(slots[index] for index in sorted(slots))
+
+
+def authors_from_authorships(authorships: list[dict] | None) -> str:
+    if not authorships:
+        return ""
+    names = []
+    for authorship in authorships[:8]:
+        author = authorship.get("author") or {}
+        name = (author.get("display_name") or "").strip()
+        if name:
+            names.append(name)
+    return ", ".join(names)
+
+
+def enabled_fetch_sources(config: dict) -> list[dict]:
+    selected = config.get("enabled_fetch_sources")
+    if not isinstance(selected, list):
+        return list(FETCH_SOURCE_CATALOG)
+    selected_keys = {str(item).strip() for item in selected if str(item).strip()}
+    return [spec for spec in FETCH_SOURCE_CATALOG if spec["key"] in selected_keys]
+
+
+def openalex_work_to_candidate(work: dict, source_name: str) -> Candidate | None:
+    title = strip_tags(work.get("title") or "")
+    if not title:
+        return None
+    primary_location = work.get("primary_location") or {}
+    source = (primary_location.get("source") or {}).get("display_name") or source_name
+    url = (
+        primary_location.get("landing_page_url")
+        or primary_location.get("pdf_url")
+        or work.get("doi")
+        or (work.get("ids") or {}).get("openalex")
+        or ""
+    )
+    if not url:
+        return None
+    published = parse_date(work.get("publication_date") or "")
+    summary = rebuild_abstract(work.get("abstract_inverted_index"))
+    authors = authors_from_authorships(work.get("authorships"))
+    candidate = Candidate(
+        title=title,
+        url=url,
+        source=source_name,
+        source_type="international_academic",
+        published=published,
+        summary=summary,
+        authors=authors,
+    )
+    candidate.reasons.append(f"顶会第一梯队：{source_name}")
+    return candidate
+
+
+def fetch_openalex_sources(source_specs: list[dict], rows: int, days: int) -> tuple[list[Candidate], dict[str, int]]:
+    start = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    candidates: list[Candidate] = []
+    source_counts: dict[str, int] = {}
+    for spec in source_specs:
+        venue_total = 0
+        for source_id in spec["source_ids"]:
+            url = "https://api.openalex.org/works?" + urllib.parse.urlencode(
+                {
+                    "filter": f"primary_location.source.id:{source_id},from_publication_date:{start}",
+                    "sort": "publication_date:desc",
+                    "per-page": str(rows),
+                }
+            )
+            data = json.loads(fetch_text(url))
+            for work in data.get("results", []):
+                candidate = openalex_work_to_candidate(work, spec["name"])
+                if candidate:
+                    candidates.append(candidate)
+                    venue_total += 1
+            time.sleep(0.6)
+        source_counts[spec["name"]] = venue_total
+    return candidates, source_counts
+
+
+def fetch_top_tier_openalex(rows: int, days: int) -> tuple[list[Candidate], dict[str, int]]:
+    top_tier_keys = {"ieee_sp", "acm_ccs", "usenix_security", "ndss"}
+    source_specs = [spec for spec in FETCH_SOURCE_CATALOG if spec["key"] in top_tier_keys]
+    return fetch_openalex_sources(source_specs, rows, days)
+
+
 def fetch_bing_rss(config: dict, rows: int) -> list[Candidate]:
     results = []
     for spec in config.get("bing_queries", []):
@@ -635,3 +1093,14 @@ def collect_candidates(config: dict, rows: int, days: int) -> tuple[list[Candida
             source_counts[name] = 0
             failures.append(f"{name} 抓取失败：{exc}")
     return candidates, source_counts, failures
+
+
+def collect_candidates(config: dict, rows: int, days: int) -> tuple[list[Candidate], dict, list[str]]:
+    source_specs = enabled_fetch_sources(config)
+    if not source_specs:
+        return [], {}, []
+    try:
+        candidates, source_counts = fetch_openalex_sources(source_specs, rows, days)
+        return candidates, source_counts, []
+    except Exception as exc:
+        return [], {}, [f"OpenAlex fetch failed: {exc}"]

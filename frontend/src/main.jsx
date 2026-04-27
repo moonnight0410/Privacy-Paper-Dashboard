@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ArrowLeft,
@@ -10,8 +10,10 @@ import {
   ExternalLink,
   FileUp,
   History,
+  Languages,
   ListFilter,
   Loader2,
+  Link2,
   Play,
   RotateCcw,
   Search,
@@ -22,38 +24,73 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000';
+const DEFAULT_API_HOST = (() => {
+  if (typeof window === 'undefined') return '127.0.0.1';
+  if (window.location.protocol === 'file:') return '127.0.0.1';
+  const host = window.location.hostname;
+  if (!host || host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') {
+    return '127.0.0.1';
+  }
+  return host;
+})();
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? `http://${DEFAULT_API_HOST}:8000`;
 
 const STATUS_META = {
-  candidate: { label: '候选', icon: ListFilter },
-  reading: { label: '待读', icon: Clock3 },
-  selected: { label: '入选', icon: CheckCircle2 },
-  shared: { label: '已分享', icon: BookOpenCheck },
-  rejected: { label: '驳回', icon: XCircle },
+  candidate: { label: '\u5019\u9009', icon: ListFilter },
+  reading: { label: '\u5f85\u8bfb', icon: Clock3 },
+  selected: { label: '\u5165\u9009', icon: CheckCircle2 },
+  shared: { label: '\u5df2\u5206\u4eab', icon: BookOpenCheck },
+  rejected: { label: '\u9a73\u56de', icon: XCircle },
 };
 
 const PAGE_META = {
-  today: { label: '今日候选', icon: ListFilter },
-  selected: { label: '已选文章', icon: CheckCircle2 },
-  history: { label: '历史库', icon: Archive },
-  config: { label: '来源/关键词配置', icon: Settings2 },
-  logs: { label: '运行日志', icon: History },
+  reading: { label: '\u5f85\u8bfb\u8bba\u6587', icon: Clock3 },
+  today: { label: '\u4eca\u65e5\u5019\u9009', icon: ListFilter },
+  selected: { label: '\u5df2\u9009\u6587\u7ae0', icon: CheckCircle2 },
+  history: { label: '\u5386\u53f2\u5e93', icon: Archive },
+  config: { label: '\u6765\u6e90/\u5173\u952e\u8bcd\u914d\u7f6e', icon: Settings2 },
+  logs: { label: '\u8fd0\u884c\u65e5\u5fd7', icon: History },
 };
 
 const SOURCE_TYPE_META = {
-  international_academic: { label: '国际学术', tone: 'academic' },
-  domestic_authority: { label: '国内权威', tone: 'authority' },
-  wechat_authority: { label: '公众号', tone: 'wechat' },
-  search: { label: '搜索来源', tone: 'search' },
+  international_academic: { label: '\u56fd\u9645\u5b66\u672f', tone: 'academic' },
+  domestic_authority: { label: '\u56fd\u5185\u6743\u5a01', tone: 'authority' },
+  wechat_authority: { label: '\u516c\u4f17\u53f7', tone: 'wechat' },
+  search: { label: '\u641c\u7d22\u6765\u6e90', tone: 'search' },
+};
+
+const UI_STATUS_META = {
+  candidate: { label: '\u5019\u9009', icon: ListFilter },
+  reading: { label: '\u5f85\u8bfb', icon: Clock3 },
+  selected: { label: '\u5165\u9009', icon: CheckCircle2 },
+  shared: { label: '\u5df2\u5206\u4eab', icon: BookOpenCheck },
+  rejected: { label: '\u9a73\u56de', icon: XCircle },
+};
+
+const UI_PAGE_META = {
+  reading: { label: '\u5f85\u8bfb\u8bba\u6587', icon: Clock3 },
+  today: { label: '\u4eca\u65e5\u5019\u9009', icon: ListFilter },
+  selected: { label: '\u5df2\u9009\u6587\u7ae0', icon: CheckCircle2 },
+  history: { label: '\u5386\u53f2\u5e93', icon: Archive },
+  config: { label: '\u6765\u6e90/\u5173\u952e\u8bcd\u914d\u7f6e', icon: Settings2 },
+  logs: { label: '\u8fd0\u884c\u65e5\u5fd7', icon: History },
+};
+
+const UI_SOURCE_TYPE_META = {
+  international_academic: { label: '\u56fd\u9645\u5b66\u672f', tone: 'academic' },
+  domestic_authority: { label: '\u56fd\u5185\u6743\u5a01', tone: 'authority' },
+  wechat_authority: { label: '\u516c\u4f17\u53f7', tone: 'wechat' },
+  search: { label: '\u641c\u7d22\u6765\u6e90', tone: 'search' },
 };
 
 const AI_PROVIDERS = {
-  other: { label: '其他供应商 / OpenAI-compatible', baseUrl: '', model: '' },
-  custom: { label: '自定义 OpenAI-compatible', baseUrl: '', model: '' },
+  other: { label: '\u5176\u4ed6 / OpenAI-compatible', baseUrl: '', model: '' },
+  custom: { label: '\u81ea\u5b9a\u4e49 OpenAI-compatible', baseUrl: '', model: '' },
   deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
-  qwen: { label: '通义千问 / 阿里百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
-  glm: { label: 'GLM / 智谱', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
-  doubao: { label: '豆包 / 火山方舟', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: '' },
+  qwen: { label: '\u901a\u4e49\u5343\u95ee / DashScope', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+  glm: { label: 'GLM / \u667a\u8c31', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+  doubao: { label: '\u8c46\u5305 / \u706b\u5c71\u65b9\u821f', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: '' },
 };
 
 const DEFAULT_AI_CONFIG = {
@@ -65,8 +102,8 @@ const DEFAULT_AI_CONFIG = {
 };
 
 const TRANSLATION_PROVIDERS = {
-  baidu: { label: '百度翻译', baseUrl: 'https://fanyi-api.baidu.com/api/trans/vip/translate' },
-  libretranslate: { label: 'LibreTranslate 兼容接口', baseUrl: 'https://libretranslate.com/translate' },
+  baidu: { label: '\u767e\u5ea6\u7ffb\u8bd1', baseUrl: 'https://fanyi-api.baidu.com/api/trans/vip/translate' },
+  libretranslate: { label: 'LibreTranslate', baseUrl: 'https://libretranslate.com/translate' },
 };
 
 const DEFAULT_TRANSLATION_CONFIG = {
@@ -133,15 +170,42 @@ const JOURNAL_VENUES = [
 ];
 
 function getSourceBadges(article) {
-  const sourceType = SOURCE_TYPE_META[article.source_type] ?? { label: article.source_type || '其他来源', tone: 'other' };
   const haystack = `${article.source || ''} ${article.url || ''}`.toLowerCase();
-  let venue = { label: '其他', tone: 'other' };
+  let sourceType = UI_SOURCE_TYPE_META[article.source_type] ?? { label: article.source_type || '\u5176\u4ed6\u6765\u6e90', tone: 'other' };
+  if (article.source_type === 'imported') {
+    if (haystack.includes('mp.weixin.qq.com')) {
+      sourceType = UI_SOURCE_TYPE_META.wechat_authority;
+    } else if (
+      haystack.includes('arxiv.org')
+      || haystack.includes('openreview.net')
+      || haystack.includes('ieee.org')
+      || haystack.includes('acm.org')
+      || haystack.includes('springer')
+      || haystack.includes('nature.com')
+      || haystack.includes('sciencedirect.com')
+      || haystack.includes('usenix.org')
+      || haystack.includes('ndss-symposium.org')
+      || haystack.includes('iacr.org')
+    ) {
+      sourceType = UI_SOURCE_TYPE_META.international_academic;
+    } else if (
+      haystack.includes('gov.cn')
+      || haystack.includes('caict.ac.cn')
+      || haystack.includes('tc260.org.cn')
+      || haystack.includes('ccf.org.cn')
+    ) {
+      sourceType = UI_SOURCE_TYPE_META.domestic_authority;
+    } else {
+      sourceType = { label: '\u5176\u4ed6\u6765\u6e90', tone: 'other' };
+    }
+  }
+  let venue = { label: '\u5176\u4ed6', tone: 'other' };
   if (article.source_type === 'wechat_authority' || haystack.includes('mp.weixin.qq.com')) {
-    venue = { label: '公众号', tone: 'wechat' };
+    venue = { label: '\u516c\u4f17\u53f7', tone: 'wechat' };
   } else if (TOP_VENUES.some((name) => haystack.includes(name))) {
-    venue = { label: '顶会', tone: 'conference' };
+    venue = { label: '\u9876\u4f1a', tone: 'conference' };
   } else if (JOURNAL_VENUES.some((name) => haystack.includes(name))) {
-    venue = { label: '期刊', tone: 'journal' };
+    venue = { label: '\u671f\u520a', tone: 'journal' };
   }
   return { sourceType, venue };
 }
@@ -175,6 +239,7 @@ function App() {
   const [articles, setArticles] = React.useState([]);
   const [logs, setLogs] = React.useState([]);
   const [config, setConfig] = React.useState(null);
+  const [configDraft, setConfigDraft] = React.useState('');
   const [aiConfig, setAIConfig] = React.useState(loadAIConfig);
   const [translationConfig, setTranslationConfig] = React.useState(loadTranslationConfig);
   const [detail, setDetail] = React.useState(null);
@@ -182,10 +247,13 @@ function App() {
   const [query, setQuery] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState('');
+  const [importUrl, setImportUrl] = React.useState('');
 
   const statusForPage = React.useMemo(() => {
     if (page === 'today') return 'candidate';
+    if (page === 'reading') return 'reading';
     if (page === 'selected') return 'selected';
+    if (page === 'history') return null;
     return null;
   }, [page]);
 
@@ -202,8 +270,14 @@ function App() {
   }, []);
 
   const loadConfig = React.useCallback(async () => {
-    setConfig(await api('/api/config'));
+    const nextConfig = await api('/api/config');
+    setConfig(nextConfig);
+    setConfigDraft((current) => (current.trim() ? current : JSON.stringify(nextConfig, null, 2)));
   }, []);
+
+  React.useEffect(() => {
+    loadConfig().catch((error) => setNotice(error.message));
+  }, [loadConfig]);
 
   React.useEffect(() => {
     if (page === 'config') {
@@ -253,12 +327,52 @@ function App() {
     }
   };
 
-  const runAIEnrich = async () => {
+  const runConfiguredFetch = async () => {
+    setBusy(true);
+    setNotice('\u6b63\u5728\u6293\u53d6\u5019\u9009\u8bba\u6587...');
+    try {
+      const activeConfig = config ?? await api('/api/config');
+      if (!config) setConfig(activeConfig);
+      const enabledSources = activeConfig.enabled_fetch_sources || [];
+      if (!enabledSources.length) {
+        throw new Error('\u8bf7\u5148\u5728\u8bbe\u7f6e\u9875\u9009\u62e9\u6293\u53d6\u6765\u6e90');
+      }
+      const result = await api('/api/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rows: activeConfig.fetch_rows ?? 12,
+          days: activeConfig.fetch_days ?? 1095,
+          min_score: activeConfig.fetch_min_score ?? 45,
+          max_age_days: activeConfig.fetch_max_age_days ?? 1095,
+          dry_run: false,
+        }),
+      });
+      const sourceCount = Object.keys(result.source_counts || {}).length;
+      setNotice(`\u6293\u53d6\u5b8c\u6210\uff1a${sourceCount} \u4e2a\u6765\u6e90\uff0c${result.candidates_total} \u6761\u539f\u59cb\u7ed3\u679c\uff0c\u65b0\u589e ${result.stats.inserted} \u6761\uff0c\u91cd\u590d ${result.stats.duplicates} \u6761\uff0c\u8fc7\u6ee4 ${result.stats.filtered} \u6761\u3002`);
+      setPage('today');
+      await loadArticles();
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runLegacyAIEnrich = async () => {
     if (!hasEnrichmentConfig(aiConfig, translationConfig)) {
       setNotice('请先在“来源/关键词配置”里填写 AI 配置，或启用并填写机器翻译配置。');
       return;
     }
-    const batchStatus = page === 'today' ? 'candidate' : page === 'selected' ? 'selected' : 'all';
+    const batchStatus = page === 'today'
+      ? 'candidate'
+      : page === 'reading'
+        ? 'reading'
+        : page === 'selected'
+          ? 'selected'
+          : page === 'history'
+            ? 'all'
+            : 'all';
     const isDetail = page === 'detail' && detail?.id;
     setBusy(true);
     try {
@@ -282,6 +396,107 @@ function App() {
       await loadArticles();
     } catch (error) {
       setNotice(`AI 生成失败：${error.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const batchStatus = page === 'today'
+    ? 'candidate'
+    : page === 'reading'
+      ? 'reading'
+      : page === 'selected'
+        ? 'selected'
+        : page === 'history'
+          ? 'all'
+          : 'all';
+  const isDetailPage = page === 'detail' && detail?.id;
+
+  const runTranslationEnrich = async () => {
+    if (!hasTranslationConfig(translationConfig)) {
+      setNotice('请先在设置页启用并填写机器翻译配置。');
+      return;
+    }
+    setBusy(true);
+    try {
+      setNotice(isDetailPage ? '正在翻译当前论文的标题和摘要...' : '正在翻译当前范围内的标题和摘要...');
+      if (isDetailPage) {
+        const result = await api('/api/ai/enrich', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ai: DEFAULT_AI_CONFIG,
+            translation: translationConfig,
+            article_id: detail.id,
+            translate: true,
+            recommend: false,
+          }),
+        });
+        setDetail(result.article);
+        setNotice('当前论文的标题和摘要已翻译。');
+        return;
+      }
+      const result = await api('/api/ai/enrich-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ai: DEFAULT_AI_CONFIG,
+          translation: translationConfig,
+          status: batchStatus,
+          limit: 200,
+          translate: true,
+          recommend: false,
+        }),
+      });
+      setNotice(`翻译完成：待处理 ${result.stats.total} 条，成功 ${result.stats.processed} 条，失败 ${result.stats.failed} 条。`);
+      await loadArticles();
+    } catch (error) {
+      setNotice(`翻译失败：${error.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runAIEnrich = async () => {
+    if (!hasAIConfig(aiConfig)) {
+      setNotice('请先在设置页填写 AI 配置。');
+      return;
+    }
+    setBusy(true);
+    try {
+      setNotice(isDetailPage ? '正在生成当前论文的 AI 解读...' : '正在生成当前范围内的 AI 解读...');
+      if (isDetailPage) {
+        const result = await api('/api/ai/enrich', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ai: aiConfig,
+            translation: translationConfig,
+            article_id: detail.id,
+            translate: false,
+            recommend: true,
+          }),
+        });
+        setDetail(result.article);
+        setNotice('当前论文的 AI 解读已生成。');
+        return;
+      }
+      const result = await api('/api/ai/enrich-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ai: aiConfig,
+          translation: translationConfig,
+          status: batchStatus,
+          limit: 200,
+          translate: false,
+          recommend: true,
+        }),
+      });
+      setNotice(`AI 解读完成：待处理 ${result.stats.total} 条，成功 ${result.stats.processed} 条，失败 ${result.stats.failed} 条。`);
+      await loadArticles();
+    } catch (error) {
+      setNotice(`AI 解读失败：${error.message}`);
     } finally {
       setBusy(false);
     }
@@ -340,6 +555,31 @@ function App() {
     }
   };
 
+  const importArticleUrl = async (event) => {
+    event.preventDefault();
+    const url = importUrl.trim();
+    if (!url) return;
+    const importStatus = page === 'selected' ? 'selected' : page === 'reading' ? 'reading' : page === 'today' ? 'candidate' : 'shared';
+    setBusy(true);
+    setNotice('\u6b63\u5728\u6293\u53d6\u76ee\u6807\u8bba\u6587...');
+    try {
+      const result = await api('/api/articles/import-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, status: importStatus }),
+      });
+      setImportUrl('');
+      const targetPage = importStatus === 'shared' ? 'history' : importStatus === 'selected' ? 'selected' : importStatus === 'reading' ? 'reading' : 'today';
+      setPage(targetPage);
+      setNotice(result.created ? '\u5df2\u6293\u53d6\u5e76\u5bfc\u5165\u5f53\u524d\u5217\u8868\u3002' : '\u5df2\u5b58\u5728\u8be5\u8bba\u6587\uff0c\u5df2\u66f4\u65b0\u5143\u6570\u636e\u3002');
+      if (page === targetPage) await loadArticles();
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const exportMarkdown = async (markShared) => {
     const result = await api('/api/export', {
       method: 'POST',
@@ -366,6 +606,7 @@ function App() {
         body: JSON.stringify(nextConfig),
       });
       setConfig(result.config);
+      setConfigDraft(JSON.stringify(result.config, null, 2));
       setNotice('配置已保存。');
     } catch (error) {
       setNotice(error.message);
@@ -385,7 +626,7 @@ function App() {
           </div>
         </div>
         <nav>
-          {Object.entries(PAGE_META).map(([key, item]) => {
+          {Object.entries(UI_PAGE_META).map(([key, item]) => {
             const Icon = item.icon;
             return (
               <button key={key} className={page === key || (page === 'detail' && previousPage === key) ? 'nav active' : 'nav'} onClick={() => { setPage(key); setDetail(null); }}>
@@ -401,7 +642,7 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">DATA SECURITY / PRIVACY PROTECTION</p>
-            <h1>{page === 'detail' ? '论文详情' : PAGE_META[page].label}</h1>
+            <h1>{page === 'detail' ? '论文详情' : UI_PAGE_META[page].label}</h1>
           </div>
           <div className="actions">
             <label className="iconButton" title="上传腾讯文档 CSV 去重">
@@ -411,22 +652,28 @@ function App() {
             <button className="iconButton" onClick={refresh} title="刷新">
               <RotateCcw size={18} />
             </button>
-            {(page === 'today' || page === 'selected' || page === 'history' || page === 'detail') && (
-              <button className="secondary" onClick={runAIEnrich} disabled={busy || (page === 'detail' && !detail)}>
-                {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
-                补齐标题/摘要翻译
+            {(page === 'today' || page === 'reading' || page === 'selected' || page === 'history' || page === 'detail') && (
+              <button className="secondary" onClick={runTranslationEnrich} disabled={busy || (page === 'detail' && !detail)}>
+                {busy ? <Loader2 className="spin" size={18} /> : <Languages size={18} />}
+                翻译标题/摘要
               </button>
             )}
-            <button className="primary" onClick={runFetch} disabled={busy}>
+            {(page === 'today' || page === 'reading' || page === 'selected' || page === 'history' || page === 'detail') && (
+              <button className="secondary" onClick={runAIEnrich} disabled={busy || (page === 'detail' && !detail)}>
+                {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+                AI生成解读
+              </button>
+            )}
+            <button className="primary" onClick={runConfiguredFetch} disabled={busy}>
               {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-              抓取今日候选
+              开始抓取
             </button>
           </div>
         </header>
 
         {notice && <div className="notice">{notice}</div>}
 
-        {(page === 'today' || page === 'selected' || page === 'history') && (
+        {(page === 'today' || page === 'reading' || page === 'selected' || page === 'history') && (
           <ArticlePage
             page={page}
             articles={articles}
@@ -435,6 +682,10 @@ function App() {
             openDetail={openDetail}
             changeStatus={changeStatus}
             exportMarkdown={exportMarkdown}
+            importUrl={importUrl}
+            setImportUrl={setImportUrl}
+            importArticleUrl={importArticleUrl}
+            busy={busy}
           />
         )}
         {page === 'detail' && (
@@ -443,6 +694,8 @@ function App() {
         {page === 'config' && (
           <ConfigPage
             config={config}
+            draft={configDraft}
+            setDraft={setConfigDraft}
             saveConfig={saveConfig}
             aiConfig={aiConfig}
             setAIConfig={setAIConfig}
@@ -456,22 +709,82 @@ function App() {
   );
 }
 
-function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus, exportMarkdown }) {
+function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus, exportMarkdown, importUrl, setImportUrl, importArticleUrl, busy }) {
   const [markShared, setMarkShared] = React.useState(true);
+  const [sourceFilter, setSourceFilter] = React.useState('all');
+  const [venueFilter, setVenueFilter] = React.useState('all');
+  const [statusFilter, setStatusFilter] = React.useState('all');
+  const [translationFilter, setTranslationFilter] = React.useState('all');
+  const [aiFilter, setAiFilter] = React.useState('all');
+
+  const filteredArticles = React.useMemo(() => {
+    return articles.filter((article) => {
+      const badges = getSourceBadges(article);
+      const sourceTone = badges.sourceType.tone || 'other';
+      const venueTone = badges.venue.tone || 'other';
+      const hasTranslation = Boolean(article.translated_title?.trim() || article.translated_summary?.trim());
+      const hasAI = Array.isArray(article.ai_recommendation) && article.ai_recommendation.length > 0;
+      if (sourceFilter !== 'all' && sourceTone !== sourceFilter) return false;
+      if (venueFilter !== 'all' && venueTone !== venueFilter) return false;
+      if (statusFilter !== 'all' && article.status !== statusFilter) return false;
+      if (translationFilter === 'translated' && !hasTranslation) return false;
+      if (translationFilter === 'untranslated' && hasTranslation) return false;
+      if (aiFilter === 'generated' && !hasAI) return false;
+      if (aiFilter === 'missing' && hasAI) return false;
+      return true;
+    });
+  }, [aiFilter, articles, sourceFilter, statusFilter, translationFilter, venueFilter]);
+
   const stats = React.useMemo(() => {
-    const total = articles.length;
-    const average = total ? Math.round(articles.reduce((sum, item) => sum + item.score, 0) / total) : 0;
-    const selected = articles.filter((item) => item.status === 'selected').length;
+    const total = filteredArticles.length;
+    const average = total ? Math.round(filteredArticles.reduce((sum, item) => sum + item.score, 0) / total) : 0;
+    const selected = filteredArticles.filter((item) => item.status === 'selected').length;
     return { total, average, selected };
-  }, [articles]);
+  }, [filteredArticles]);
 
   return (
     <div className="contentGrid">
       <section className="listPanel">
-        <div className="toolstrip">
-          <div className="searchBox">
-            <Search size={17} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、摘要或来源" />
+        <div className="toolstrip toolstripFilters">
+          <div className="filterStack">
+            <div className="searchBox">
+              <Search size={17} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、摘要或来源" />
+            </div>
+            <div className="filterRow">
+              <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
+                <option value="all">全部来源</option>
+                <option value="academic">国际学术</option>
+                <option value="authority">国内权威</option>
+                <option value="wechat">公众号</option>
+                <option value="search">搜索来源</option>
+              </select>
+              <select value={venueFilter} onChange={(event) => setVenueFilter(event.target.value)}>
+                <option value="all">全部会刊</option>
+                <option value="conference">顶会</option>
+                <option value="journal">期刊</option>
+                <option value="wechat">公众号</option>
+                <option value="other">其他</option>
+              </select>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="all">全部状态</option>
+                <option value="candidate">候选</option>
+                <option value="reading">待读</option>
+                <option value="selected">已选</option>
+                <option value="shared">已分享</option>
+                <option value="rejected">驳回</option>
+              </select>
+              <select value={translationFilter} onChange={(event) => setTranslationFilter(event.target.value)}>
+                <option value="all">翻译状态</option>
+                <option value="translated">已翻译</option>
+                <option value="untranslated">未翻译</option>
+              </select>
+              <select value={aiFilter} onChange={(event) => setAiFilter(event.target.value)}>
+                <option value="all">解读状态</option>
+                <option value="generated">已解读</option>
+                <option value="missing">未解读</option>
+              </select>
+            </div>
           </div>
           {page === 'selected' && (
             <div className="exportBox">
@@ -485,20 +798,36 @@ function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus
               </button>
             </div>
           )}
+          {(page === 'history' || page === 'selected') && (
+            <form className="importBox" onSubmit={importArticleUrl}>
+              <div className="searchBox importUrlBox">
+                <Link2 size={17} />
+                <input
+                  value={importUrl}
+                  onChange={(event) => setImportUrl(event.target.value)}
+                  placeholder={page === 'selected' ? '粘贴论文链接并导入已选文章' : '粘贴论文链接并导入历史库'}
+                />
+              </div>
+              <button className="secondary" disabled={busy || !importUrl.trim()}>
+                <FileUp size={17} />
+                导入链接
+              </button>
+            </form>
+          )}
         </div>
         <div className="articleList">
-          {articles.map((article) => (
+          {filteredArticles.map((article) => (
             <ArticleRow key={article.id} article={article} openDetail={openDetail} changeStatus={changeStatus} />
           ))}
-          {!articles.length && <div className="empty">暂无条目。可以先抓取今日候选，或调整筛选条件。</div>}
+          {!filteredArticles.length && <div className="empty">没有匹配的条目，可以调整筛选条件或导入论文链接。</div>}
         </div>
       </section>
       <aside className="metrics">
         <Metric label="当前条目" value={stats.total} />
         <Metric label="平均评分" value={stats.average} />
-        <Metric label="入选数量" value={stats.selected} />
+        <Metric label="已选数量" value={stats.selected} />
         <div className="statusLegend">
-          {Object.entries(STATUS_META).map(([key, item]) => {
+          {Object.entries(UI_STATUS_META).map(([key, item]) => {
             const Icon = item.icon;
             return (
               <span key={key}>
@@ -514,15 +843,17 @@ function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus
 }
 
 function ArticleRow({ article, openDetail, changeStatus }) {
-  const StatusIcon = STATUS_META[article.status]?.icon ?? ListFilter;
+  const StatusIcon = UI_STATUS_META[article.status]?.icon ?? ListFilter;
   const badges = getSourceBadges(article);
+  const englishTitle = article.title?.trim();
   const translatedTitle = article.translated_title?.trim();
+  const displayTitle = englishTitle || translatedTitle || '未命名论文';
   return (
     <article className="articleRow" onClick={() => openDetail(article)}>
       <div className="score">{article.score}</div>
       <div className="articleMain">
-        <h2>{translatedTitle || article.title}</h2>
-        {translatedTitle && <p className="originalTitle">{article.title}</p>}
+        <h2>{displayTitle}</h2>
+        {translatedTitle && translatedTitle !== displayTitle && <p className="translatedTitle">{translatedTitle}</p>}
         <div className="metaLine">
           <span className={`sourceBadge ${badges.sourceType.tone}`}>{badges.sourceType.label}</span>
           <span className={`venueBadge ${badges.venue.tone}`}>{badges.venue.label}</span>
@@ -530,7 +861,7 @@ function ArticleRow({ article, openDetail, changeStatus }) {
           <span>{article.published || '无日期'}</span>
           <span className={`status ${article.status}`}>
             <StatusIcon size={14} />
-            {STATUS_META[article.status]?.label}
+            {UI_STATUS_META[article.status]?.label}
           </span>
         </div>
         <p>{(article.reasons || []).slice(0, 3).join('；') || '暂无推荐理由'}</p>
@@ -548,7 +879,7 @@ function ArticleRow({ article, openDetail, changeStatus }) {
 function StatusButtons({ article, changeStatus, compact = false }) {
   return (
     <div className={compact ? 'statusButtons compact' : 'statusButtons'}>
-      {Object.entries(STATUS_META).map(([status, item]) => {
+      {Object.entries(UI_STATUS_META).map(([status, item]) => {
         const Icon = item.icon;
         return (
           <button
@@ -576,7 +907,9 @@ function DetailPage({ article, changeStatus, close }) {
     );
   }
   const badges = getSourceBadges(article);
+  const englishTitle = article.title?.trim();
   const translatedTitle = article.translated_title?.trim();
+  const displayTitle = englishTitle || translatedTitle || '未命名论文';
   return (
     <section className="detailPage">
       <button className="secondary backButton" onClick={close}>
@@ -584,14 +917,14 @@ function DetailPage({ article, changeStatus, close }) {
         返回列表
       </button>
       <div className="detailScore">{article.score}</div>
-      <h2>{translatedTitle || article.title}</h2>
-      {translatedTitle && <p className="originalTitle detailOriginalTitle">{article.title}</p>}
+      <h2>{displayTitle}</h2>
+      {translatedTitle && translatedTitle !== displayTitle && <p className="translatedTitle detailTranslatedTitle">{translatedTitle}</p>}
       <div className="detailMeta">
         <span className={`sourceBadge ${badges.sourceType.tone}`}>{badges.sourceType.label}</span>
         <span className={`venueBadge ${badges.venue.tone}`}>{badges.venue.label}</span>
         <span>{article.source}</span>
         <span>{article.published || '无日期'}</span>
-        <span>{STATUS_META[article.status]?.label}</span>
+        <span>{UI_STATUS_META[article.status]?.label}</span>
       </div>
       <StatusButtons article={article} changeStatus={changeStatus} />
       <section>
@@ -603,13 +936,13 @@ function DetailPage({ article, changeStatus, close }) {
         <p>{article.translated_summary || '暂未生成中文摘要。'}</p>
       </section>
       <section>
-        <h3>AI 推荐理由</h3>
+        <h3>AI 解读</h3>
         {(article.ai_recommendation || []).length > 0 ? (
           <ul>
             {article.ai_recommendation.map((reason) => <li key={reason}>{reason}</li>)}
           </ul>
         ) : (
-          <p>暂未生成 AI 推荐理由。</p>
+          <p>暂未生成 AI 解读。</p>
         )}
       </section>
       <section>
@@ -633,27 +966,24 @@ function DetailPage({ article, changeStatus, close }) {
 function runtimeConfigToPersisted(config) {
   const next = { ...(config || {}) };
   delete next.reference_sources;
+  delete next.fetch_source_catalog;
   return next;
 }
 
-function sourceName(source) {
-  return source?.full_name || '';
+function fetchSourceName(source) {
+  return source?.name || '';
 }
 
-function sourceLabel(source) {
-  const alias = source?.alias?.trim();
-  const fullName = sourceName(source);
-  return alias && alias !== fullName ? `${alias} · ${fullName}` : fullName;
+function fetchSourceLabel(source) {
+  const parts = [source?.tier, source?.category].filter(Boolean);
+  return parts.length ? `${fetchSourceName(source)} (${parts.join(' / ')})` : fetchSourceName(source);
 }
 
-function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConfig, setTranslationConfig }) {
-  const [draft, setDraft] = React.useState('');
+function ConfigPage({ config, draft, setDraft, saveConfig, aiConfig, setAIConfig, translationConfig, setTranslationConfig }) {
   const [sourceQuery, setSourceQuery] = React.useState('');
   const [showKey, setShowKey] = React.useState(false);
   const [showTranslationSecret, setShowTranslationSecret] = React.useState(false);
-  React.useEffect(() => {
-    if (config) setDraft(JSON.stringify(config, null, 2));
-  }, [config]);
+
   const parsedDraft = React.useMemo(() => {
     try {
       return JSON.parse(draft || '{}');
@@ -661,61 +991,87 @@ function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConf
       return null;
     }
   }, [draft]);
-  const referenceSources = parsedDraft?.reference_sources || config?.reference_sources || [];
-  const selectedSourceNames = React.useMemo(() => {
-    const configured = parsedDraft?.enabled_reference_sources;
+
+  const sourceCatalog = parsedDraft?.fetch_source_catalog || config?.fetch_source_catalog || [];
+  const selectedSourceKeys = React.useMemo(() => {
+    const configured = parsedDraft?.enabled_fetch_sources;
     if (Array.isArray(configured)) {
       return new Set(configured);
     }
-    return new Set(referenceSources.map(sourceName).filter(Boolean));
-  }, [parsedDraft, referenceSources]);
+    return new Set(sourceCatalog.map((source) => source.key).filter(Boolean));
+  }, [parsedDraft, sourceCatalog]);
+
   const filteredSources = React.useMemo(() => {
     const keyword = sourceQuery.trim().toLowerCase();
-    if (!keyword) return referenceSources;
-    return referenceSources.filter((source) => {
-      const text = `${source.category || ''} ${source.tier || ''} ${source.full_name || ''} ${source.alias || ''}`.toLowerCase();
+    if (!keyword) return sourceCatalog;
+    return sourceCatalog.filter((source) => {
+      const text = `${source.key || ''} ${source.name || ''} ${source.category || ''} ${source.tier || ''}`.toLowerCase();
       return text.includes(keyword);
     });
-  }, [referenceSources, sourceQuery]);
-  const selectedCount = referenceSources.filter((source) => selectedSourceNames.has(sourceName(source))).length;
+  }, [sourceCatalog, sourceQuery]);
+
+  const selectedCount = sourceCatalog.filter((source) => selectedSourceKeys.has(source.key)).length;
+
   const updateDraftConfig = (updater) => {
     if (!parsedDraft) return;
     const next = updater(parsedDraft);
     setDraft(JSON.stringify(next, null, 2));
   };
-  const setSourceSelection = (fullName, checked) => {
+
+  const parseInteger = (value, fallback) => {
+    const next = Number.parseInt(String(value ?? '').trim(), 10);
+    return Number.isFinite(next) ? next : fallback;
+  };
+
+  const setSourceSelection = (key, checked) => {
     updateDraftConfig((current) => {
-      const currentSources = current.reference_sources || referenceSources;
+      const currentSources = current.fetch_source_catalog || sourceCatalog;
       const selected = new Set(
-        Array.isArray(current.enabled_reference_sources)
-          ? current.enabled_reference_sources
-          : currentSources.map(sourceName).filter(Boolean),
+        Array.isArray(current.enabled_fetch_sources)
+          ? current.enabled_fetch_sources
+          : currentSources.map((source) => source.key).filter(Boolean),
       );
-      if (checked) selected.add(fullName);
-      else selected.delete(fullName);
-      return { ...current, enabled_reference_sources: currentSources.map(sourceName).filter((name) => selected.has(name)) };
+      if (checked) selected.add(key);
+      else selected.delete(key);
+      return {
+        ...current,
+        enabled_fetch_sources: currentSources.map((source) => source.key).filter((item) => selected.has(item)),
+      };
     });
   };
-  const setFilteredSources = (checked) => {
+
+  const setBatchSelection = (keys, checked) => {
     updateDraftConfig((current) => {
-      const currentSources = current.reference_sources || referenceSources;
+      const currentSources = current.fetch_source_catalog || sourceCatalog;
       const selected = new Set(
-        Array.isArray(current.enabled_reference_sources)
-          ? current.enabled_reference_sources
-          : currentSources.map(sourceName).filter(Boolean),
+        Array.isArray(current.enabled_fetch_sources)
+          ? current.enabled_fetch_sources
+          : currentSources.map((source) => source.key).filter(Boolean),
       );
-      filteredSources.map(sourceName).filter(Boolean).forEach((name) => {
-        if (checked) selected.add(name);
-        else selected.delete(name);
+      keys.filter(Boolean).forEach((key) => {
+        if (checked) selected.add(key);
+        else selected.delete(key);
       });
-      return { ...current, enabled_reference_sources: currentSources.map(sourceName).filter((name) => selected.has(name)) };
+      return {
+        ...current,
+        enabled_fetch_sources: currentSources.map((source) => source.key).filter((item) => selected.has(item)),
+      };
     });
   };
+
+  const updateFetchValue = (field, fallback) => (event) => {
+    updateDraftConfig((current) => ({
+      ...current,
+      [field]: parseInteger(event.target.value, fallback),
+    }));
+  };
+
   const updateAIConfig = (patch) => {
     const next = { ...aiConfig, ...patch };
     setAIConfig(next);
     saveAIConfig(next);
   };
+
   const changeProvider = (provider) => {
     const preset = AI_PROVIDERS[provider] ?? AI_PROVIDERS.custom;
     updateAIConfig({
@@ -724,11 +1080,13 @@ function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConf
       model: preset.model || aiConfig.model,
     });
   };
+
   const updateTranslationConfig = (patch) => {
     const next = { ...translationConfig, ...patch };
     setTranslationConfig(next);
     saveTranslationConfig(next);
   };
+
   const changeTranslationProvider = (provider) => {
     const preset = TRANSLATION_PROVIDERS[provider] ?? TRANSLATION_PROVIDERS.baidu;
     updateTranslationConfig({
@@ -736,53 +1094,97 @@ function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConf
       base_url: preset.baseUrl,
     });
   };
+
   const submit = () => {
+    if (!parsedDraft) return;
     saveConfig(runtimeConfigToPersisted(JSON.parse(draft)));
   };
+
+  const visibleKeys = filteredSources.map((source) => source.key);
+  const conferenceKeys = sourceCatalog.filter((source) => source.category === 'conference').map((source) => source.key);
+  const journalKeys = sourceCatalog.filter((source) => source.category === 'journal').map((source) => source.key);
+
   return (
     <div className="settingsStack">
       <section className="aiPanel">
         <div className="panelTitle">
-          <h2>抓取期刊/会议来源</h2>
-          <span>{selectedCount} / {referenceSources.length} 已选择</span>
+          <h2>{'\u6293\u53d6\u8303\u56f4'}</h2>
+          <span>{selectedCount} / {sourceCatalog.length} {'\u5df2\u9009\u62e9'}</span>
         </div>
         <div className="sourceToolbar">
           <div className="searchBox sourceSearch">
             <Search size={17} />
-            <input value={sourceQuery} onChange={(event) => setSourceQuery(event.target.value)} placeholder="搜索期刊、会议、简称或梯队" />
+            <input
+              value={sourceQuery}
+              onChange={(event) => setSourceQuery(event.target.value)}
+              placeholder={'\u641c\u7d22\u4f1a\u8bae\u3001\u671f\u520a\u3001Tier \u6216 source key'}
+            />
           </div>
-          <button className="secondary" onClick={() => setFilteredSources(true)} disabled={!parsedDraft || !filteredSources.length}>全选当前</button>
-          <button className="secondary" onClick={() => setFilteredSources(false)} disabled={!parsedDraft || !filteredSources.length}>清空当前</button>
+          <button type="button" className="secondary" onClick={() => setBatchSelection(visibleKeys, true)} disabled={!parsedDraft || !visibleKeys.length}>
+            {'\u5168\u9009\u5f53\u524d'}
+          </button>
+          <button type="button" className="secondary" onClick={() => setBatchSelection(visibleKeys, false)} disabled={!parsedDraft || !visibleKeys.length}>
+            {'\u6e05\u7a7a\u5f53\u524d'}
+          </button>
+          <button type="button" className="secondary" onClick={() => setBatchSelection(conferenceKeys, true)} disabled={!parsedDraft || !conferenceKeys.length}>
+            {'\u5168\u9009\u4f1a\u8bae'}
+          </button>
+          <button type="button" className="secondary" onClick={() => setBatchSelection(journalKeys, true)} disabled={!parsedDraft || !journalKeys.length}>
+            {'\u5168\u9009\u671f\u520a'}
+          </button>
         </div>
         <div className="sourceList">
-          {filteredSources.map((source) => {
-            const fullName = sourceName(source);
-            return (
-              <label className="sourceItem" key={fullName}>
-                <input
-                  type="checkbox"
-                  checked={selectedSourceNames.has(fullName)}
-                  onChange={(event) => setSourceSelection(fullName, event.target.checked)}
-                  disabled={!parsedDraft}
-                />
-                <span>
-                  <strong>{sourceLabel(source)}</strong>
-                  <small>{[source.category, source.tier].filter(Boolean).join(' / ')}</small>
-                </span>
-              </label>
-            );
-          })}
-          {!filteredSources.length && <div className="empty inlineEmpty">没有匹配的来源。</div>}
+          {filteredSources.map((source) => (
+            <label className="sourceItem" key={source.key}>
+              <input
+                type="checkbox"
+                checked={selectedSourceKeys.has(source.key)}
+                onChange={(event) => setSourceSelection(source.key, event.target.checked)}
+                disabled={!parsedDraft}
+              />
+              <span>
+                <strong>{fetchSourceLabel(source)}</strong>
+                <small>{source.key}</small>
+              </span>
+            </label>
+          ))}
+          {!filteredSources.length && <div className="empty inlineEmpty">{'\u6ca1\u6709\u5339\u914d\u7684\u6293\u53d6\u6e90\u3002'}</div>}
         </div>
       </section>
+
       <section className="aiPanel">
         <div className="panelTitle">
-          <h2>AI 摘要与推荐</h2>
-          <span>API Key 仅保存在浏览器 localStorage，不写入后端。</span>
+          <h2>{'\u6293\u53d6\u7b56\u7565'}</h2>
+          <span>{'\u8fd9\u91cc\u53ea\u63a7\u5236\u6293\u53d6\uff0cAI \u7ffb\u8bd1/\u89e3\u8bfb\u5728\u4e0b\u65b9\u5355\u72ec\u914d\u7f6e\u3002'}</span>
         </div>
         <div className="aiGrid">
           <label>
-            <span>供应商</span>
+            <span>{'\u6bcf\u4e2a source \u6293\u53d6\u6761\u6570'}</span>
+            <input type="number" min="1" max="100" value={parsedDraft?.fetch_rows ?? ''} onChange={updateFetchValue('fetch_rows', config?.fetch_rows ?? 12)} />
+          </label>
+          <label>
+            <span>{'\u56de\u6eaf\u5929\u6570'}</span>
+            <input type="number" min="1" max="1095" value={parsedDraft?.fetch_days ?? ''} onChange={updateFetchValue('fetch_days', config?.fetch_days ?? 1095)} />
+          </label>
+          <label>
+            <span>{'\u6700\u4f4e\u5165\u5e93\u5206\u6570'}</span>
+            <input type="number" min="-100" max="200" value={parsedDraft?.fetch_min_score ?? ''} onChange={updateFetchValue('fetch_min_score', config?.fetch_min_score ?? 45)} />
+          </label>
+          <label>
+            <span>{'\u6700\u5927\u53ef\u63a5\u53d7\u8bba\u6587\u5929\u9f84'}</span>
+            <input type="number" min="0" max="1095" value={parsedDraft?.fetch_max_age_days ?? ''} onChange={updateFetchValue('fetch_max_age_days', config?.fetch_max_age_days ?? 1095)} />
+          </label>
+        </div>
+      </section>
+
+      <section className="aiPanel">
+        <div className="panelTitle">
+          <h2>{'AI \u6458\u8981\u4e0e\u89e3\u8bfb'}</h2>
+          <span>{'API Key \u4ec5\u4fdd\u5b58\u5728\u6d4f\u89c8\u5668 localStorage\uff0c\u4e0d\u5199\u5165\u540e\u7aef\u3002'}</span>
+        </div>
+        <div className="aiGrid">
+          <label>
+            <span>{'\u4f9b\u5e94\u5546'}</span>
             <select value={aiConfig.provider === 'custom' ? 'other' : aiConfig.provider} onChange={(event) => changeProvider(event.target.value)}>
               {Object.entries(AI_PROVIDERS).filter(([key]) => key !== 'custom').map(([key, provider]) => (
                 <option key={key} value={key}>{provider.label}</option>
@@ -795,7 +1197,7 @@ function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConf
           </label>
           <label>
             <span>Model</span>
-            <input value={aiConfig.model} onChange={(event) => updateAIConfig({ model: event.target.value })} placeholder="例如 deepseek-chat / qwen-plus" />
+            <input value={aiConfig.model} onChange={(event) => updateAIConfig({ model: event.target.value })} placeholder={'deepseek-chat / qwen-plus'} />
           </label>
           <label>
             <span>API Key</span>
@@ -804,29 +1206,26 @@ function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConf
                 type={showKey ? 'text' : 'password'}
                 value={aiConfig.api_key}
                 onChange={(event) => updateAIConfig({ api_key: event.target.value })}
-                placeholder="仅保存在当前浏览器"
+                placeholder={'\u4ec5\u4fdd\u5b58\u5728\u5f53\u524d\u6d4f\u89c8\u5668'}
               />
-              <button className="secondary" onClick={() => setShowKey((value) => !value)}>{showKey ? '隐藏' : '显示'}</button>
+              <button className="secondary" onClick={() => setShowKey((value) => !value)}>{showKey ? '\u9690\u85cf' : '\u663e\u793a'}</button>
             </div>
           </label>
         </div>
       </section>
+
       <section className="aiPanel">
         <div className="panelTitle">
-          <h2>机器翻译摘要</h2>
-          <span>启用后标题和摘要走翻译 API；AI 只负责推荐理由，可不填写 AI 配置。</span>
+          <h2>{'\u673a\u5668\u7ffb\u8bd1'}</h2>
+          <span>{'\u542f\u7528\u540e\u6807\u9898\u548c\u6458\u8981\u8d70\u7ffb\u8bd1 API\uff1bAI \u53ea\u8d1f\u8d23\u89e3\u8bfb\u4e0e\u63a8\u8350\u7406\u7531\u3002'}</span>
         </div>
         <div className="aiGrid">
           <label className="toggleLabel">
-            <span>启用机器翻译</span>
-            <input
-              type="checkbox"
-              checked={translationConfig.enabled}
-              onChange={(event) => updateTranslationConfig({ enabled: event.target.checked })}
-            />
+            <span>{'\u542f\u7528\u673a\u5668\u7ffb\u8bd1'}</span>
+            <input type="checkbox" checked={translationConfig.enabled} onChange={(event) => updateTranslationConfig({ enabled: event.target.checked })} />
           </label>
           <label>
-            <span>翻译供应商</span>
+            <span>{'\u7ffb\u8bd1\u4f9b\u5e94\u5546'}</span>
             <select value={translationConfig.provider} onChange={(event) => changeTranslationProvider(event.target.value)}>
               {Object.entries(TRANSLATION_PROVIDERS).map(([key, provider]) => (
                 <option key={key} value={key}>{provider.label}</option>
@@ -834,11 +1233,11 @@ function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConf
             </select>
           </label>
           <label>
-            <span>接口地址</span>
+            <span>{'\u63a5\u53e3\u5730\u5740'}</span>
             <input value={translationConfig.base_url} onChange={(event) => updateTranslationConfig({ base_url: event.target.value })} />
           </label>
           <label>
-            <span>源语言 / 目标语言</span>
+            <span>{'\u6e90\u8bed\u8a00 / \u76ee\u6807\u8bed\u8a00'}</span>
             <div className="inlineInputs">
               <input value={translationConfig.source_lang} onChange={(event) => updateTranslationConfig({ source_lang: event.target.value })} />
               <input value={translationConfig.target_lang} onChange={(event) => updateTranslationConfig({ target_lang: event.target.value })} />
@@ -847,19 +1246,19 @@ function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConf
           {translationConfig.provider === 'baidu' ? (
             <>
               <label>
-                <span>百度 App ID</span>
+                <span>{'\u767e\u5ea6 App ID'}</span>
                 <input value={translationConfig.app_id} onChange={(event) => updateTranslationConfig({ app_id: event.target.value })} />
               </label>
               <label>
-                <span>百度密钥</span>
+                <span>{'\u767e\u5ea6\u5bc6\u94a5'}</span>
                 <div className="keyInput">
                   <input
                     type={showTranslationSecret ? 'text' : 'password'}
                     value={translationConfig.secret_key}
                     onChange={(event) => updateTranslationConfig({ secret_key: event.target.value })}
-                    placeholder="仅保存在当前浏览器"
+                    placeholder={'\u4ec5\u4fdd\u5b58\u5728\u5f53\u524d\u6d4f\u89c8\u5668'}
                   />
-                  <button className="secondary" onClick={() => setShowTranslationSecret((value) => !value)}>{showTranslationSecret ? '隐藏' : '显示'}</button>
+                  <button className="secondary" onClick={() => setShowTranslationSecret((value) => !value)}>{showTranslationSecret ? '\u9690\u85cf' : '\u663e\u793a'}</button>
                 </div>
               </label>
             </>
@@ -870,23 +1269,44 @@ function ConfigPage({ config, saveConfig, aiConfig, setAIConfig, translationConf
                 type={showTranslationSecret ? 'text' : 'password'}
                 value={translationConfig.api_key}
                 onChange={(event) => updateTranslationConfig({ api_key: event.target.value })}
-                placeholder="可选，仅保存在当前浏览器"
+                placeholder={'\u53ef\u9009\uff0c\u4ec5\u4fdd\u5b58\u5728\u5f53\u524d\u6d4f\u89c8\u5668'}
               />
             </label>
           )}
         </div>
       </section>
+
       <section className="configPanel">
         <textarea value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck="false" />
         <div className="configActions">
-          <button className="primary" onClick={submit}>
+          <button className="primary" onClick={submit} disabled={!parsedDraft}>
             <Settings2 size={18} />
-            保存配置
+            {'\u4fdd\u5b58\u914d\u7f6e'}
           </button>
         </div>
       </section>
     </div>
   );
+}
+
+const LOG_ACTION_META = {
+  fetch: '\u6293\u53d6',
+  translate: '\u7ffb\u8bd1',
+  ai: 'AI \u89e3\u8bfb',
+  enrich: '\u7ffb\u8bd1 + AI \u89e3\u8bfb',
+};
+
+function formatLogSummary(log) {
+  if (log.action_type === 'translate' || log.action_type === 'ai' || log.action_type === 'enrich') {
+    const scope = log.source_counts?.scope || 'all';
+    const scopeLabel = scope === 'single'
+      ? '\u5355\u7bc7'
+      : scope === 'all'
+        ? '\u5168\u90e8'
+        : UI_STATUS_META[scope]?.label || scope;
+    return `范围 ${scopeLabel} / 待处理 ${log.candidates_total} / 成功 ${log.updated_count} / 失败 ${log.duplicate_count} / 跳过 ${log.filtered_count}`;
+  }
+  return `来源 ${JSON.stringify(log.source_counts)} / 候选 ${log.candidates_total} / 新增 ${log.inserted_count} / 更新 ${log.updated_count} / 过滤 ${log.filtered_count} / 去重 ${log.duplicate_count}`;
 }
 
 function LogsPage({ logs }) {
@@ -895,13 +1315,11 @@ function LogsPage({ logs }) {
       {logs.map((log) => (
         <article className="logRow" key={log.id}>
           <div>
-            <strong>{log.status}</strong>
+            <strong>{LOG_ACTION_META[log.action_type] || '\u6293\u53d6'} · {log.status}</strong>
             <span>{log.finished_at}</span>
           </div>
           <p>{log.message}</p>
-          <code>
-            来源 {JSON.stringify(log.source_counts)} / 候选 {log.candidates_total} / 新增 {log.inserted_count} / 更新 {log.updated_count} / 过滤 {log.filtered_count} / 去重 {log.duplicate_count}
-          </code>
+          <code>{formatLogSummary(log)}</code>
           {log.failures?.length > 0 && <pre>{log.failures.join('\n')}</pre>}
         </article>
       ))}
@@ -920,3 +1338,4 @@ function Metric({ label, value }) {
 }
 
 createRoot(document.getElementById('root')).render(<App />);
+

@@ -6,13 +6,35 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from .collector import Candidate, canonical_url, is_near_duplicate, normalize_title, relevant, score_candidate
+from .collector import Candidate, canonical_url, infer_import_source, is_near_duplicate, normalize_title, relevant, score_candidate
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "privacy_papers.sqlite3"
 VALID_STATUSES = {"candidate", "reading", "selected", "shared", "rejected"}
+STATUS_PRIORITY = {
+    "rejected": 0,
+    "candidate": 1,
+    "shared": 2,
+    "reading": 3,
+    "selected": 4,
+}
+
+MOJIBAKE_MARKERS = ("æ", "å", "ç", "é", "ï", "€", "鈥", "鍊", "寰", "鏉", "锛", "銆", "闅", "鐧")
+LEGACY_TEXT_REPLACEMENTS = {
+    "æ¥æºç±»åï¼š": "来源类型：",
+    "鍙傝€冩潵婧愶細": "参考来源：",
+    "é¡¶ä¼šç¬¬ä¸€æ¢¯éŸï¼š": "顶会第一梯队：",
+    "Manual URL import": "手动链接导入",
+    "dry-run锛": "dry-run：",
+    "鎶撳彇瀹屾垚锛屽€欓€夊凡鍐欏叆宸ヤ綔鍙般€": "抓取完成，候选已写入工作台。",
+    "dry-run top-tier only:": "dry-run：顶会抓取",
+    "relevant candidates": "条候选通过基础过滤，未写入数据库。",
+    "top-tier-only fetch completed": "顶会抓取完成，候选已写入工作台。",
+    "manual top-tier-only fetch via reference sources": "通过参考源手动执行顶会抓取",
+    "Top tier fetch failed:": "顶会抓取失败：",
+}
 
 
 def now() -> str:
@@ -81,6 +103,10 @@ def init_db() -> None:
             """
         )
         ensure_article_columns(conn)
+        ensure_run_log_columns(conn)
+        normalize_stored_urls(conn)
+        normalize_imported_sources(conn)
+        collapse_all_duplicate_urls(conn)
 
 
 def ensure_article_columns(conn: sqlite3.Connection) -> None:
@@ -93,15 +119,229 @@ def ensure_article_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE articles ADD COLUMN ai_recommendation TEXT DEFAULT ''")
 
 
+def ensure_run_log_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(run_logs)").fetchall()}
+    if "action_type" not in columns:
+        conn.execute("ALTER TABLE run_logs ADD COLUMN action_type TEXT DEFAULT 'fetch'")
+
+
+def text_quality(value: str) -> tuple[int, int, int]:
+    cjk = sum(1 for char in value if "\u4e00" <= char <= "\u9fff")
+    bad = sum(value.count(marker) for marker in MOJIBAKE_MARKERS)
+    return (cjk, -bad, len(value))
+
+
+def normalize_legacy_text(value: str | None) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    for bad, good in LEGACY_TEXT_REPLACEMENTS.items():
+        text = text.replace(bad, good)
+    if not any(marker in text for marker in MOJIBAKE_MARKERS):
+        return text
+    candidates = [text]
+    try:
+        candidates.append(text.encode("latin1").decode("utf-8"))
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    try:
+        candidates.append(text.encode("gbk").decode("utf-8"))
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    normalized = max(candidates, key=text_quality)
+    for bad, good in LEGACY_TEXT_REPLACEMENTS.items():
+        normalized = normalized.replace(bad, good)
+    return normalized
+
+
+def normalize_stored_urls(conn: sqlite3.Connection) -> None:
+    article_rows = conn.execute("SELECT id, url FROM articles").fetchall()
+    for row in article_rows:
+        conn.execute("UPDATE articles SET url_norm = ? WHERE id = ?", (canonical_url(row["url"]), row["id"]))
+    history_rows = conn.execute("SELECT id, url FROM shared_history").fetchall()
+    for row in history_rows:
+        conn.execute("UPDATE shared_history SET url_norm = ? WHERE id = ?", (canonical_url(row["url"]), row["id"]))
+
+
+def normalize_imported_sources(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, source, source_type, url
+        FROM articles
+        WHERE source_type = 'imported'
+        """
+    ).fetchall()
+    for row in rows:
+        host = ""
+        if row["url"]:
+            host = row["url"].split("/")[2].lower() if "://" in row["url"] else row["url"].lower()
+        source, source_type = infer_import_source(host or (row["source"] or "").lower(), {}, "")
+        conn.execute(
+            "UPDATE articles SET source = ?, source_type = ? WHERE id = ?",
+            (source or row["source"], source_type, row["id"]),
+        )
+
+
 def row_to_article(row: sqlite3.Row) -> dict:
     data = dict(row)
-    data["reasons"] = json.loads(data.pop("reasons_json") or "[]")
+    data["reasons"] = [normalize_legacy_text(item) for item in json.loads(data.pop("reasons_json") or "[]")]
+    for key in ("title", "source", "summary", "authors", "translated_title", "translated_summary"):
+        if key in data:
+            data[key] = normalize_legacy_text(data[key])
     recommendation = data.get("ai_recommendation") or "[]"
     try:
-        data["ai_recommendation"] = json.loads(recommendation)
+        data["ai_recommendation"] = [normalize_legacy_text(item) for item in json.loads(recommendation)]
     except json.JSONDecodeError:
-        data["ai_recommendation"] = [recommendation] if recommendation else []
+        data["ai_recommendation"] = [normalize_legacy_text(recommendation)] if recommendation else []
     return data
+
+
+def status_rank(status: str | None) -> int:
+    return STATUS_PRIORITY.get(status or "", -1)
+
+
+def source_quality(source: str | None, source_type: str | None) -> tuple[int, int]:
+    text = (source or "").strip()
+    is_domain = bool(text) and "." in text and " " not in text
+    return (
+        1 if (source_type or "") and source_type != "search" else 0,
+        0 if is_domain else 1,
+    )
+
+
+def parse_reason_list(raw: str | None) -> list[str]:
+    try:
+        values = json.loads(raw or "[]")
+        if isinstance(values, list):
+            return [normalize_legacy_text(str(item).strip()) for item in values if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+    return []
+
+
+def parse_ai_list(raw: str | None) -> list[str]:
+    try:
+        values = json.loads(raw or "[]")
+        if isinstance(values, list):
+            return [normalize_legacy_text(str(item).strip()) for item in values if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+    text = normalize_legacy_text((raw or "").strip())
+    return [text] if text else []
+
+
+def prefer_longer(*values: str | None) -> str:
+    candidates = [str(value).strip() for value in values if str(value or "").strip()]
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda item: (len(item), item))
+
+
+def merge_unique_text(*groups: list[str]) -> list[str]:
+    results: list[str] = []
+    seen = set()
+    for group in groups:
+        for value in group:
+            text = str(value).strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(text)
+    return results
+
+
+def collapse_duplicate_rows(conn: sqlite3.Connection, preferred_id: int | None, url_norm: str) -> int:
+    if not url_norm:
+        return 0
+    rows = conn.execute("SELECT * FROM articles WHERE url_norm = ? ORDER BY id", (url_norm,)).fetchall()
+    if len(rows) <= 1:
+        return 0
+    keeper = next((row for row in rows if row["id"] == preferred_id), None)
+    if keeper is None:
+        keeper = max(
+            rows,
+            key=lambda row: (
+                status_rank(row["status"]),
+                row["score"] or 0,
+                len((row["summary"] or "").strip()),
+                len((row["authors"] or "").strip()),
+                row["updated_at"] or "",
+                row["id"],
+            ),
+        )
+    others = [row for row in rows if row["id"] != keeper["id"]]
+    source_row = max(
+        rows,
+        key=lambda row: (
+            source_quality(row["source"], row["source_type"]),
+            len((row["source"] or "").strip()),
+            row["updated_at"] or "",
+            row["id"],
+        ),
+    )
+    merged_status = max((row["status"] for row in rows), key=status_rank)
+    shared_at = max((row["shared_at"] or "" for row in rows), default="") or None
+    merged_reasons = merge_unique_text(*[parse_reason_list(row["reasons_json"]) for row in rows])
+    merged_ai = merge_unique_text(*[parse_ai_list(row["ai_recommendation"]) for row in rows])
+    merged_title = keeper["title"] or prefer_longer(*[row["title"] for row in rows])
+    merged_title_norm = normalize_title(merged_title)
+    merged_summary = keeper["summary"] or prefer_longer(*[row["summary"] for row in rows])
+    merged_authors = keeper["authors"] or prefer_longer(*[row["authors"] for row in rows])
+    merged_published = keeper["published"] or prefer_longer(*[row["published"] for row in rows])
+    merged_translated_title = keeper["translated_title"] or prefer_longer(*[row["translated_title"] for row in rows])
+    merged_translated_summary = keeper["translated_summary"] or prefer_longer(*[row["translated_summary"] for row in rows])
+    merged_score = max(int(row["score"] or 0) for row in rows)
+    conn.execute(
+        """
+        UPDATE articles
+        SET title = ?, title_norm = ?, source = ?, source_type = ?, published = ?, summary = ?, authors = ?,
+            score = ?, reasons_json = ?, status = ?, shared_at = ?, translated_title = ?, translated_summary = ?,
+            ai_recommendation = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            merged_title,
+            merged_title_norm,
+            source_row["source"],
+            source_row["source_type"],
+            merged_published,
+            merged_summary,
+            merged_authors,
+            merged_score,
+            json.dumps(merged_reasons, ensure_ascii=False),
+            merged_status,
+            shared_at,
+            merged_translated_title,
+            merged_translated_summary,
+            json.dumps(merged_ai, ensure_ascii=False),
+            now(),
+            keeper["id"],
+        ),
+    )
+    if merged_status == "shared":
+        add_shared_row(conn, merged_title, keeper["url"], source_row["source"])
+    delete_ids = [row["id"] for row in others]
+    conn.executemany("DELETE FROM articles WHERE id = ?", [(row_id,) for row_id in delete_ids])
+    return len(delete_ids)
+
+
+def collapse_all_duplicate_urls(conn: sqlite3.Connection) -> int:
+    duplicate_urls = conn.execute(
+        """
+        SELECT url_norm
+        FROM articles
+        WHERE url_norm != ''
+        GROUP BY url_norm
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    removed = 0
+    for row in duplicate_urls:
+        removed += collapse_duplicate_rows(conn, None, row["url_norm"])
+    return removed
 
 
 def update_ai_content(article_id: int, translated_title: str, translated_summary: str, ai_recommendation: list[str]) -> dict | None:
@@ -219,12 +459,13 @@ def save_candidates(candidates: Iterable[Candidate], config: dict, min_score: in
                         existing["id"],
                     ),
                 )
+                collapse_duplicate_rows(conn, existing["id"], url_norm)
                 stats["updated"] += 1
                 continue
             if (url_norm and url_norm in current_urls) or is_near_duplicate(title_norm, current_titles):
                 stats["duplicates"] += 1
                 continue
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO articles
                 (title, title_norm, url, url_norm, source, source_type, published, summary,
@@ -248,10 +489,88 @@ def save_candidates(candidates: Iterable[Candidate], config: dict, min_score: in
                 ),
             )
             stats["inserted"] += 1
+            collapse_duplicate_rows(conn, cur.lastrowid, url_norm)
             current_titles.add(title_norm)
             if url_norm:
                 current_urls.add(url_norm)
     return stats
+
+
+def upsert_imported_candidate(candidate: Candidate, status: str = "shared") -> tuple[dict, bool]:
+    if status not in VALID_STATUSES:
+        raise ValueError("Invalid status")
+    title_norm = normalize_title(candidate.title)
+    url_norm = canonical_url(candidate.url)
+    if not title_norm:
+        raise ValueError("Imported article must have a title")
+
+    timestamp = now()
+    with connect() as conn:
+        existing = find_existing(conn, title_norm, url_norm)
+        shared_at = timestamp if status == "shared" else None
+        if existing:
+            shared_at = timestamp if status == "shared" else existing["shared_at"]
+            conn.execute(
+                """
+                UPDATE articles
+                SET title = ?, title_norm = ?, url = ?, url_norm = ?, source = ?, source_type = ?,
+                    published = ?, summary = ?, authors = ?, score = ?, reasons_json = ?,
+                    status = ?, shared_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    candidate.title,
+                    title_norm,
+                    candidate.url,
+                    url_norm,
+                    candidate.source,
+                    candidate.source_type,
+                    candidate.published,
+                    candidate.summary,
+                    candidate.authors,
+                    candidate.score,
+                    json.dumps(candidate.reasons, ensure_ascii=False),
+                    status,
+                    shared_at,
+                    timestamp,
+                    existing["id"],
+                ),
+            )
+            created = False
+            article_id = existing["id"]
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO articles
+                (title, title_norm, url, url_norm, source, source_type, published, summary,
+                 authors, score, reasons_json, status, created_at, updated_at, shared_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate.title,
+                    title_norm,
+                    candidate.url,
+                    url_norm,
+                    candidate.source,
+                    candidate.source_type,
+                    candidate.published,
+                    candidate.summary,
+                    candidate.authors,
+                    candidate.score,
+                    json.dumps(candidate.reasons, ensure_ascii=False),
+                    status,
+                    timestamp,
+                    timestamp,
+                    shared_at,
+                ),
+            )
+            created = True
+            article_id = cur.lastrowid
+        if status == "shared":
+            add_shared_row(conn, candidate.title, candidate.url, candidate.source)
+        collapse_duplicate_rows(conn, article_id, url_norm)
+        row = conn.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()
+        return row_to_article(row), created
 
 
 def list_articles(status: str | None = None, query: str | None = None) -> list[dict]:
@@ -292,6 +611,7 @@ def update_status(article_id: int, status: str) -> dict | None:
         )
         if status == "shared":
             add_shared_row(conn, row["title"], row["url"], row["source"])
+        collapse_duplicate_rows(conn, article_id, row["url_norm"])
         updated = conn.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()
         return row_to_article(updated)
 
@@ -337,14 +657,23 @@ def add_seen_titles_urls(titles: Iterable[str], urls: Iterable[str], source: str
     return count
 
 
-def create_log(source_counts: dict, failures: list[str], candidates_total: int, stats: dict, status: str, message: str) -> dict:
+def create_log(
+    source_counts: dict,
+    failures: list[str],
+    candidates_total: int,
+    stats: dict,
+    status: str,
+    message: str,
+    action_type: str = "fetch",
+) -> dict:
     with connect() as conn:
+        ensure_run_log_columns(conn)
         cur = conn.execute(
             """
             INSERT INTO run_logs
             (started_at, finished_at, status, source_counts_json, failures_json, candidates_total,
-             inserted_count, updated_count, filtered_count, duplicate_count, message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             inserted_count, updated_count, filtered_count, duplicate_count, message, action_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now(),
@@ -358,6 +687,7 @@ def create_log(source_counts: dict, failures: list[str], candidates_total: int, 
                 stats.get("filtered", 0),
                 stats.get("duplicates", 0),
                 message,
+                action_type,
             ),
         )
         row = conn.execute("SELECT * FROM run_logs WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -367,7 +697,9 @@ def create_log(source_counts: dict, failures: list[str], candidates_total: int, 
 def log_row_to_dict(row: sqlite3.Row) -> dict:
     data = dict(row)
     data["source_counts"] = json.loads(data.pop("source_counts_json") or "{}")
-    data["failures"] = json.loads(data.pop("failures_json") or "[]")
+    data["failures"] = [normalize_legacy_text(item) for item in json.loads(data.pop("failures_json") or "[]")]
+    data["message"] = normalize_legacy_text(data.get("message"))
+    data["action_type"] = data.get("action_type") or "fetch"
     return data
 
 
