@@ -33,6 +33,7 @@ from .database import (
     upsert_imported_candidate,
     update_ai_content,
     update_status,
+    now,
 )
 
 
@@ -99,6 +100,7 @@ class EnrichBatchRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=500)
     translate: bool = True
     recommend: bool = True
+    latest_fetch_only: bool = False
 
 
 def has_ai_config(config: AIConfig) -> bool:
@@ -115,10 +117,10 @@ def enrich_action_type(translate: bool, recommend: bool) -> str:
 
 def enrich_action_label(translate: bool, recommend: bool) -> str:
     if translate and recommend:
-        return "翻译与 AI 解读"
+        return "\u7ffb\u8bd1\u4e0e AI \u89e3\u8bfb"
     if translate:
-        return "翻译"
-    return "AI 解读"
+        return "\u7ffb\u8bd1"
+    return "AI \u89e3\u8bfb"
 
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -149,6 +151,7 @@ def health() -> dict:
 @app.post("/api/fetch")
 def fetch_today(payload: FetchRequest) -> dict:
     config = load_config()
+    batch_token = now()
     candidates, source_counts, failures = collect_candidates(config, payload.rows, payload.days)
     if payload.dry_run:
         filtered = 0
@@ -160,10 +163,10 @@ def fetch_today(payload: FetchRequest) -> dict:
             else:
                 filtered += 1
         stats = {"inserted": 0, "updated": 0, "filtered": filtered, "duplicates": 0}
-        message = f"dry-run：{relevant_count} 条候选通过基础过滤，未写入数据库。"
+        message = f"dry-run\uff1a{relevant_count} \u6761\u5019\u9009\u901a\u8fc7\u57fa\u7840\u8fc7\u6ee4\uff0c\u672a\u5199\u5165\u6570\u636e\u5e93\u3002"
     else:
-        stats = save_candidates(candidates, config, payload.min_score, payload.max_age_days)
-        message = "抓取完成，候选已写入工作台。"
+        stats = save_candidates(candidates, config, payload.min_score, payload.max_age_days, fetch_batch=batch_token)
+        message = "\u6293\u53d6\u5b8c\u6210\uff0c\u5019\u9009\u5df2\u5199\u5165\u5de5\u4f5c\u53f0\u3002"
     log = create_log(
         source_counts=source_counts,
         failures=failures,
@@ -171,6 +174,7 @@ def fetch_today(payload: FetchRequest) -> dict:
         stats=stats,
         status="partial" if failures else "success",
         message=message,
+        batch_token=batch_token,
     )
     return {"candidates_total": len(candidates), "source_counts": source_counts, "failures": failures, "stats": stats, "log": log}
 
@@ -178,13 +182,14 @@ def fetch_today(payload: FetchRequest) -> dict:
 @app.post("/api/fetch/top-tier")
 def fetch_top_tier(payload: TopTierFetchRequest) -> dict:
     config = load_config()
+    batch_token = now()
     try:
         candidates, source_counts = fetch_top_tier_openalex(payload.rows, payload.days)
         failures: list[str] = []
     except Exception as exc:
         candidates = []
         source_counts = {}
-        failures = [f"顶会抓取失败：{exc}"]
+        failures = [f"\u9876\u4f1a\u6293\u53d6\u5931\u8d25\uff1a{exc}"]
     if payload.dry_run:
         filtered = 0
         relevant_count = 0
@@ -195,10 +200,10 @@ def fetch_top_tier(payload: TopTierFetchRequest) -> dict:
             else:
                 filtered += 1
         stats = {"inserted": 0, "updated": 0, "filtered": filtered, "duplicates": 0}
-        message = f"dry-run：顶会抓取共 {relevant_count} 条候选通过基础过滤，未写入数据库。"
+        message = f"dry-run\uff1a\u9876\u4f1a\u6293\u53d6\u5171 {relevant_count} \u6761\u5019\u9009\u901a\u8fc7\u57fa\u7840\u8fc7\u6ee4\uff0c\u672a\u5199\u5165\u6570\u636e\u5e93\u3002"
     else:
-        stats = save_candidates(candidates, config, payload.min_score, payload.max_age_days)
-        message = "顶会抓取完成，候选已写入工作台。"
+        stats = save_candidates(candidates, config, payload.min_score, payload.max_age_days, fetch_batch=batch_token)
+        message = "\u9876\u4f1a\u6293\u53d6\u5b8c\u6210\uff0c\u5019\u9009\u5df2\u5199\u5165\u5de5\u4f5c\u53f0\u3002"
     log = create_log(
         source_counts=source_counts,
         failures=failures,
@@ -206,15 +211,21 @@ def fetch_top_tier(payload: TopTierFetchRequest) -> dict:
         stats=stats,
         status="partial" if failures else "success",
         message=message,
+        batch_token=batch_token,
     )
     return {"candidates_total": len(candidates), "source_counts": source_counts, "failures": failures, "stats": stats, "log": log}
 
 
 @app.get("/api/articles")
-def articles(status: str | None = Query(default=None), q: str | None = Query(default=None)) -> list[dict]:
+def articles(
+    status: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    today_only: bool = Query(default=False),
+    latest_fetch_only: bool = Query(default=False),
+) -> list[dict]:
     if status and status not in VALID_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
-    return list_articles(status, q)
+    return list_articles(status, q, today_only=today_only, latest_fetch_only=latest_fetch_only)
 
 
 @app.get("/api/articles/{article_id}")
@@ -283,12 +294,12 @@ def enrich_article(payload: EnrichRequest) -> dict:
         )
     except Exception as exc:
         create_log(
-            source_counts={"scope": "single", "article_id": payload.article_id},
+            source_counts={"scope": "single", "article_id": payload.article_id, "latest_fetch_only": False},
             failures=[f"{article['title']}: {exc}"],
             candidates_total=1,
             stats={"inserted": 0, "updated": 0, "filtered": 0, "duplicates": 1},
             status="failed",
-            message=f"{action_label}失败：{article['title']}",
+            message=f"{action_label}\u5931\u8d25\uff1a{article['title']}",
             action_type=action_type,
         )
         raise HTTPException(status_code=502, detail=f"AI enrich failed: {exc}") from exc
@@ -299,12 +310,12 @@ def enrich_article(payload: EnrichRequest) -> dict:
         result["ai_recommendation"],
     )
     create_log(
-        source_counts={"scope": "single", "article_id": payload.article_id},
+        source_counts={"scope": "single", "article_id": payload.article_id, "latest_fetch_only": False},
         failures=[],
         candidates_total=1,
         stats={"inserted": 0, "updated": 1 if updated else 0, "filtered": 0, "duplicates": 0},
         status="success",
-        message=f"{action_label}完成：{article['title']}",
+        message=f"{action_label}\u5b8c\u6210\uff1a{article['title']}",
         action_type=action_type,
     )
     return {"ok": True, "article": updated}
@@ -324,6 +335,7 @@ def enrich_batch(payload: EnrichBatchRequest) -> dict:
         require_title=payload.translate,
         require_summary=payload.translate,
         require_recommendation=payload.recommend,
+        latest_fetch_only=payload.latest_fetch_only,
     )
     stats = {"total": len(articles), "processed": 0, "failed": 0, "skipped": 0}
     failures = []
@@ -350,19 +362,19 @@ def enrich_batch(payload: EnrichBatchRequest) -> dict:
             failure_messages.append(f"{article['title']}: {exc}")
     scope = payload.status or "all"
     if stats["total"] == 0:
-        message = f"{action_label}完成：当前范围没有待处理文章。"
+        message = f"{action_label}\u5b8c\u6210\uff1a\u5f53\u524d\u8303\u56f4\u5185\u6ca1\u6709\u9700\u8981\u5904\u7406\u7684\u8bba\u6587\u3002"
         log_status = "success"
     elif stats["failed"] == 0:
-        message = f"{action_label}完成：成功处理 {stats['processed']} 篇。"
+        message = f"{action_label}\u5b8c\u6210\uff1a\u6210\u529f\u5904\u7406 {stats['processed']} \u6761\u3002"
         log_status = "success"
     elif stats["processed"] == 0:
-        message = f"{action_label}失败：{stats['failed']} 篇处理失败。"
+        message = f"{action_label}\u5931\u8d25\uff1a{stats['failed']} \u6761\u5168\u90e8\u5904\u7406\u5931\u8d25\u3002"
         log_status = "failed"
     else:
-        message = f"{action_label}部分完成：成功 {stats['processed']} 篇，失败 {stats['failed']} 篇。"
+        message = f"{action_label}\u90e8\u5206\u5b8c\u6210\uff1a\u6210\u529f {stats['processed']} \u6761\uff0c\u5931\u8d25 {stats['failed']} \u6761\u3002"
         log_status = "partial"
     create_log(
-        source_counts={"scope": scope},
+        source_counts={"scope": scope, "latest_fetch_only": payload.latest_fetch_only},
         failures=failure_messages,
         candidates_total=stats["total"],
         stats={

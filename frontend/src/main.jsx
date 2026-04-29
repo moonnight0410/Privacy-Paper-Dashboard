@@ -45,8 +45,9 @@ const STATUS_META = {
 };
 
 const PAGE_META = {
+  latest: { label: '\u672c\u6b21\u6293\u53d6', icon: Play },
   reading: { label: '\u5f85\u8bfb\u8bba\u6587', icon: Clock3 },
-  today: { label: '\u4eca\u65e5\u5019\u9009', icon: ListFilter },
+  today: { label: '\u5019\u9009\u6c60', icon: ListFilter },
   selected: { label: '\u5df2\u9009\u6587\u7ae0', icon: CheckCircle2 },
   history: { label: '\u5386\u53f2\u5e93', icon: Archive },
   config: { label: '\u6765\u6e90/\u5173\u952e\u8bcd\u914d\u7f6e', icon: Settings2 },
@@ -69,8 +70,9 @@ const UI_STATUS_META = {
 };
 
 const UI_PAGE_META = {
+  latest: { label: '\u672c\u6b21\u6293\u53d6', icon: Play },
   reading: { label: '\u5f85\u8bfb\u8bba\u6587', icon: Clock3 },
-  today: { label: '\u4eca\u65e5\u5019\u9009', icon: ListFilter },
+  today: { label: '\u5019\u9009\u6c60', icon: ListFilter },
   selected: { label: '\u5df2\u9009\u6587\u7ae0', icon: CheckCircle2 },
   history: { label: '\u5386\u53f2\u5e93', icon: Archive },
   config: { label: '\u6765\u6e90/\u5173\u952e\u8bcd\u914d\u7f6e', icon: Settings2 },
@@ -141,6 +143,20 @@ function saveTranslationConfig(config) {
   localStorage.setItem('privacy-radar-translation-config', JSON.stringify(config));
 }
 
+function loadUIState(key, fallback) {
+  try {
+    const stored = localStorage.getItem(key);
+    if (!stored) return fallback;
+    return { ...fallback, ...JSON.parse(stored) };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveUIState(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
 const TOP_VENUES = [
   'ieee symposium on security and privacy',
   'ieee s&p',
@@ -167,6 +183,11 @@ const JOURNAL_VENUES = [
   'acm tods',
   'journal',
   'transactions',
+];
+
+const PREPRINT_VENUES = [
+  'arxiv',
+  'arxiv.org',
 ];
 
 function getSourceBadges(article) {
@@ -202,6 +223,8 @@ function getSourceBadges(article) {
   let venue = { label: '\u5176\u4ed6', tone: 'other' };
   if (article.source_type === 'wechat_authority' || haystack.includes('mp.weixin.qq.com')) {
     venue = { label: '\u516c\u4f17\u53f7', tone: 'wechat' };
+  } else if (PREPRINT_VENUES.some((name) => haystack.includes(name))) {
+    venue = { label: '\u9884\u5370\u672c', tone: 'preprint' };
   } else if (TOP_VENUES.some((name) => haystack.includes(name))) {
     venue = { label: '\u9876\u4f1a', tone: 'conference' };
   } else if (JOURNAL_VENUES.some((name) => haystack.includes(name))) {
@@ -234,6 +257,42 @@ function hasEnrichmentConfig(aiConfig, translationConfig) {
   return hasAIConfig(aiConfig) || hasTranslationConfig(translationConfig);
 }
 
+function formatBatchLabel(batch) {
+  const value = String(batch || '').trim();
+  if (!value) return '未记录批次';
+  return value.replace('T', ' ').slice(0, 19);
+}
+
+function formatDateTime(value) {
+  const text = String(value || '').trim();
+  if (!text) return '未记录';
+  return text.replace('T', ' ').slice(0, 19);
+}
+
+function summarizeBatchNotice(actionLabel, result) {
+  const stats = result?.stats || {};
+  const total = stats.total ?? 0;
+  const processed = stats.processed ?? 0;
+  const failed = stats.failed ?? 0;
+  const failures = Array.isArray(result?.failures) ? result.failures : [];
+  if (!failed) {
+    return `${actionLabel}完成：待处理 ${total} 条，成功 ${processed} 条，失败 0 条。`;
+  }
+  const preview = failures
+    .slice(0, 3)
+    .map((item) => item?.title || item?.id || '未命名条目')
+    .join('；');
+  const suffix = failures.length > 3 ? '；其余失败可在运行日志查看。' : '。';
+  return `${actionLabel}完成：待处理 ${total} 条，成功 ${processed} 条，失败 ${failed} 条。失败样本：${preview}${suffix}`;
+}
+
+function parseImportUrls(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return [];
+  const matches = text.match(/https?:\/\/[^\s<>"']+/g) || [];
+  return Array.from(new Set(matches.map((item) => item.trim()).filter(Boolean)));
+}
+
 function App() {
   const [page, setPage] = React.useState('today');
   const [articles, setArticles] = React.useState([]);
@@ -244,12 +303,14 @@ function App() {
   const [translationConfig, setTranslationConfig] = React.useState(loadTranslationConfig);
   const [detail, setDetail] = React.useState(null);
   const [previousPage, setPreviousPage] = React.useState('today');
-  const [query, setQuery] = React.useState('');
+  const [queryByPage, setQueryByPage] = React.useState(() => loadUIState('privacy-radar-query-by-page', {}));
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState('');
   const [importUrl, setImportUrl] = React.useState('');
+  const query = queryByPage[page] || '';
 
   const statusForPage = React.useMemo(() => {
+    if (page === 'latest') return 'candidate';
     if (page === 'today') return 'candidate';
     if (page === 'reading') return 'reading';
     if (page === 'selected') return 'selected';
@@ -260,10 +321,11 @@ function App() {
   const loadArticles = React.useCallback(async () => {
     const params = new URLSearchParams();
     if (statusForPage) params.set('status', statusForPage);
+    if (page === 'latest') params.set('latest_fetch_only', '1');
     if (query.trim()) params.set('q', query.trim());
     const data = await api(`/api/articles?${params.toString()}`);
     setArticles(data);
-  }, [query, statusForPage]);
+  }, [page, query, statusForPage]);
 
   const loadLogs = React.useCallback(async () => {
     setLogs(await api('/api/logs'));
@@ -294,6 +356,10 @@ function App() {
     loadArticles().catch((error) => setNotice(error.message));
   }, [loadArticles, loadConfig, loadLogs, page]);
 
+  React.useEffect(() => {
+    saveUIState('privacy-radar-query-by-page', queryByPage);
+  }, [queryByPage]);
+
   const runFetch = async () => {
     setBusy(true);
     setNotice('正在抓取候选来源...');
@@ -304,7 +370,7 @@ function App() {
         body: JSON.stringify({ rows: 30, days: 30, min_score: 45, max_age_days: 90, dry_run: false }),
       });
       setNotice(`抓取完成：候选 ${result.candidates_total} 条，新增 ${result.stats.inserted} 条，去重 ${result.stats.duplicates} 条。`);
-      setPage('today');
+      setPage('latest');
       await loadArticles();
       if (hasEnrichmentConfig(aiConfig, translationConfig)) {
         try {
@@ -350,7 +416,7 @@ function App() {
       });
       const sourceCount = Object.keys(result.source_counts || {}).length;
       setNotice(`\u6293\u53d6\u5b8c\u6210\uff1a${sourceCount} \u4e2a\u6765\u6e90\uff0c${result.candidates_total} \u6761\u539f\u59cb\u7ed3\u679c\uff0c\u65b0\u589e ${result.stats.inserted} \u6761\uff0c\u91cd\u590d ${result.stats.duplicates} \u6761\uff0c\u8fc7\u6ee4 ${result.stats.filtered} \u6761\u3002`);
-      setPage('today');
+      setPage('latest');
       await loadArticles();
     } catch (error) {
       setNotice(error.message);
@@ -364,7 +430,9 @@ function App() {
       setNotice('请先在“来源/关键词配置”里填写 AI 配置，或启用并填写机器翻译配置。');
       return;
     }
-    const batchStatus = page === 'today'
+    const batchStatus = page === 'latest'
+      ? 'candidate'
+      : page === 'today'
       ? 'candidate'
       : page === 'reading'
         ? 'reading'
@@ -390,9 +458,9 @@ function App() {
       const result = await api('/api/ai/enrich-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ai: aiConfig, translation: translationConfig, status: batchStatus, limit: 200 }),
+        body: JSON.stringify({ ai: aiConfig, translation: translationConfig, status: batchStatus, limit: 200, latest_fetch_only: page === 'latest' }),
       });
-      setNotice(`AI 补齐完成：待处理 ${result.stats.total} 条，成功 ${result.stats.processed} 条，失败 ${result.stats.failed} 条。`);
+      setNotice(summarizeBatchNotice('AI 补齐', result));
       await loadArticles();
     } catch (error) {
       setNotice(`AI 生成失败：${error.message}`);
@@ -401,15 +469,18 @@ function App() {
     }
   };
 
-  const batchStatus = page === 'today'
+  const batchStatus = page === 'latest'
+    ? 'candidate'
+    : page === 'today'
     ? 'candidate'
     : page === 'reading'
       ? 'reading'
-      : page === 'selected'
-        ? 'selected'
-        : page === 'history'
-          ? 'all'
-          : 'all';
+        : page === 'selected'
+          ? 'selected'
+          : page === 'history'
+            ? 'all'
+            : 'all';
+  const latestFetchOnly = page === 'latest';
   const isDetailPage = page === 'detail' && detail?.id;
 
   const runTranslationEnrich = async () => {
@@ -446,9 +517,10 @@ function App() {
           limit: 200,
           translate: true,
           recommend: false,
+          latest_fetch_only: latestFetchOnly,
         }),
       });
-      setNotice(`翻译完成：待处理 ${result.stats.total} 条，成功 ${result.stats.processed} 条，失败 ${result.stats.failed} 条。`);
+      setNotice(summarizeBatchNotice('翻译', result));
       await loadArticles();
     } catch (error) {
       setNotice(`翻译失败：${error.message}`);
@@ -491,9 +563,10 @@ function App() {
           limit: 200,
           translate: false,
           recommend: true,
+          latest_fetch_only: latestFetchOnly,
         }),
       });
-      setNotice(`AI 解读完成：待处理 ${result.stats.total} 条，成功 ${result.stats.processed} 条，失败 ${result.stats.failed} 条。`);
+      setNotice(summarizeBatchNotice('AI 解读', result));
       await loadArticles();
     } catch (error) {
       setNotice(`AI 解读失败：${error.message}`);
@@ -538,6 +611,29 @@ function App() {
     await loadArticles();
   };
 
+  const bulkChangeStatus = async (articleIds, status) => {
+    const ids = Array.from(new Set((articleIds || []).filter(Boolean)));
+    if (!ids.length) return;
+    setBusy(true);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((articleId) => api(`/api/articles/${articleId}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status }),
+        })),
+      );
+      const success = results.filter((item) => item.status === 'fulfilled').length;
+      const failed = results.length - success;
+      setNotice(`批量标记为${STATUS_META[status].label}：成功 ${success} 篇，失败 ${failed} 篇。`);
+      await loadArticles();
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const uploadSeen = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -557,21 +653,45 @@ function App() {
 
   const importArticleUrl = async (event) => {
     event.preventDefault();
-    const url = importUrl.trim();
-    if (!url) return;
+    const urls = parseImportUrls(importUrl);
+    if (!urls.length) {
+      setNotice('请粘贴至少一个有效的论文链接。');
+      return;
+    }
     const importStatus = page === 'selected' ? 'selected' : page === 'reading' ? 'reading' : page === 'today' ? 'candidate' : 'shared';
     setBusy(true);
-    setNotice('\u6b63\u5728\u6293\u53d6\u76ee\u6807\u8bba\u6587...');
+    setNotice(urls.length === 1 ? '正在抓取目标论文...' : `正在批量抓取 ${urls.length} 条论文链接...`);
     try {
-      const result = await api('/api/articles/import-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, status: importStatus }),
-      });
+      const results = await Promise.allSettled(
+        urls.map((url) => api('/api/articles/import-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, status: importStatus }),
+        })),
+      );
+      const successResults = results.filter((item) => item.status === 'fulfilled').map((item) => item.value);
+      const createdCount = successResults.filter((item) => item.created).length;
+      const updatedCount = successResults.length - createdCount;
+      const failedEntries = results
+        .map((item, index) => ({ item, url: urls[index] }))
+        .filter(({ item }) => item.status === 'rejected');
       setImportUrl('');
       const targetPage = importStatus === 'shared' ? 'history' : importStatus === 'selected' ? 'selected' : importStatus === 'reading' ? 'reading' : 'today';
       setPage(targetPage);
-      setNotice(result.created ? '\u5df2\u6293\u53d6\u5e76\u5bfc\u5165\u5f53\u524d\u5217\u8868\u3002' : '\u5df2\u5b58\u5728\u8be5\u8bba\u6587\uff0c\u5df2\u66f4\u65b0\u5143\u6570\u636e\u3002');
+      if (!successResults.length) {
+        const firstFailure = failedEntries[0]?.item?.reason?.message || '批量导入失败';
+        throw new Error(firstFailure);
+      }
+      const failurePreview = failedEntries
+        .slice(0, 2)
+        .map(({ url }) => url)
+        .join('；');
+      const failureSuffix = failedEntries.length > 2 ? '；其余失败项请重试。' : '';
+      setNotice(
+        failedEntries.length
+          ? `批量导入完成：新增 ${createdCount} 条，更新 ${updatedCount} 条，失败 ${failedEntries.length} 条。失败样本：${failurePreview}${failureSuffix}`
+          : `批量导入完成：新增 ${createdCount} 条，更新 ${updatedCount} 条。`,
+      );
       if (page === targetPage) await loadArticles();
     } catch (error) {
       setNotice(error.message);
@@ -652,13 +772,13 @@ function App() {
             <button className="iconButton" onClick={refresh} title="刷新">
               <RotateCcw size={18} />
             </button>
-            {(page === 'today' || page === 'reading' || page === 'selected' || page === 'history' || page === 'detail') && (
+            {(page === 'latest' || page === 'today' || page === 'reading' || page === 'selected' || page === 'history' || page === 'detail') && (
               <button className="secondary" onClick={runTranslationEnrich} disabled={busy || (page === 'detail' && !detail)}>
                 {busy ? <Loader2 className="spin" size={18} /> : <Languages size={18} />}
                 翻译标题/摘要
               </button>
             )}
-            {(page === 'today' || page === 'reading' || page === 'selected' || page === 'history' || page === 'detail') && (
+            {(page === 'latest' || page === 'today' || page === 'reading' || page === 'selected' || page === 'history' || page === 'detail') && (
               <button className="secondary" onClick={runAIEnrich} disabled={busy || (page === 'detail' && !detail)}>
                 {busy ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
                 AI生成解读
@@ -673,14 +793,16 @@ function App() {
 
         {notice && <div className="notice">{notice}</div>}
 
-        {(page === 'today' || page === 'reading' || page === 'selected' || page === 'history') && (
+        {(page === 'latest' || page === 'today' || page === 'reading' || page === 'selected' || page === 'history') && (
           <ArticlePage
+            key={page}
             page={page}
             articles={articles}
             query={query}
-            setQuery={setQuery}
+            setQuery={(value) => setQueryByPage((current) => ({ ...current, [page]: value }))}
             openDetail={openDetail}
             changeStatus={changeStatus}
+            bulkChangeStatus={bulkChangeStatus}
             exportMarkdown={exportMarkdown}
             importUrl={importUrl}
             setImportUrl={setImportUrl}
@@ -709,13 +831,47 @@ function App() {
   );
 }
 
-function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus, exportMarkdown, importUrl, setImportUrl, importArticleUrl, busy }) {
-  const [markShared, setMarkShared] = React.useState(true);
-  const [sourceFilter, setSourceFilter] = React.useState('all');
-  const [venueFilter, setVenueFilter] = React.useState('all');
-  const [statusFilter, setStatusFilter] = React.useState('all');
-  const [translationFilter, setTranslationFilter] = React.useState('all');
-  const [aiFilter, setAiFilter] = React.useState('all');
+function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus, bulkChangeStatus, exportMarkdown, importUrl, setImportUrl, importArticleUrl, busy }) {
+  const defaultFilters = React.useMemo(() => ({
+    markShared: true,
+    sourceFilter: 'all',
+    venueFilter: 'all',
+    statusFilter: 'all',
+    translationFilter: 'all',
+    aiFilter: 'all',
+    batchFilter: 'all',
+    pendingOnly: false,
+  }), []);
+  const [pageFilters, setPageFilters] = React.useState(() => loadUIState(`privacy-radar-filters-${page}`, defaultFilters));
+  const [selectedIds, setSelectedIds] = React.useState([]);
+  const {
+    markShared,
+    sourceFilter,
+    venueFilter,
+    statusFilter,
+    translationFilter,
+    aiFilter,
+    batchFilter,
+    pendingOnly,
+  } = pageFilters;
+
+  React.useEffect(() => {
+    setPageFilters(loadUIState(`privacy-radar-filters-${page}`, defaultFilters));
+    setSelectedIds([]);
+  }, [defaultFilters, page]);
+
+  React.useEffect(() => {
+    saveUIState(`privacy-radar-filters-${page}`, pageFilters);
+  }, [page, pageFilters]);
+
+  const updateFilters = (patch) => {
+    setPageFilters((current) => ({ ...current, ...patch }));
+  };
+
+  const batchOptions = React.useMemo(() => {
+    const values = Array.from(new Set(articles.map((article) => String(article.fetch_batch || '').trim())));
+    return values.sort((a, b) => b.localeCompare(a));
+  }, [articles]);
 
   const filteredArticles = React.useMemo(() => {
     return articles.filter((article) => {
@@ -731,9 +887,16 @@ function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus
       if (translationFilter === 'untranslated' && hasTranslation) return false;
       if (aiFilter === 'generated' && !hasAI) return false;
       if (aiFilter === 'missing' && hasAI) return false;
+      if (batchFilter !== 'all' && String(article.fetch_batch || '') !== batchFilter) return false;
+      if (pendingOnly && (hasTranslation || hasAI)) return false;
       return true;
     });
-  }, [aiFilter, articles, sourceFilter, statusFilter, translationFilter, venueFilter]);
+  }, [aiFilter, articles, batchFilter, pendingOnly, sourceFilter, statusFilter, translationFilter, venueFilter]);
+
+  React.useEffect(() => {
+    const validIds = new Set(filteredArticles.map((article) => article.id));
+    setSelectedIds((current) => current.filter((id) => validIds.has(id)));
+  }, [filteredArticles]);
 
   const stats = React.useMemo(() => {
     const total = filteredArticles.length;
@@ -741,6 +904,27 @@ function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus
     const selected = filteredArticles.filter((item) => item.status === 'selected').length;
     return { total, average, selected };
   }, [filteredArticles]);
+
+  const selectable = page === 'latest';
+  const allFilteredSelected = selectable && filteredArticles.length > 0 && filteredArticles.every((article) => selectedIds.includes(article.id));
+
+  const toggleSelected = (articleId) => {
+    setSelectedIds((current) => (
+      current.includes(articleId)
+        ? current.filter((id) => id !== articleId)
+        : [...current, articleId]
+    ));
+  };
+
+  const toggleSelectAll = () => {
+    if (!selectable) return;
+    setSelectedIds(allFilteredSelected ? [] : filteredArticles.map((article) => article.id));
+  };
+
+  const handleBulkStatus = async (status) => {
+    await bulkChangeStatus(selectedIds, status);
+    setSelectedIds([]);
+  };
 
   return (
     <div className="contentGrid">
@@ -752,21 +936,22 @@ function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、摘要或来源" />
             </div>
             <div className="filterRow">
-              <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
+              <select value={sourceFilter} onChange={(event) => updateFilters({ sourceFilter: event.target.value })}>
                 <option value="all">全部来源</option>
                 <option value="academic">国际学术</option>
                 <option value="authority">国内权威</option>
                 <option value="wechat">公众号</option>
                 <option value="search">搜索来源</option>
               </select>
-              <select value={venueFilter} onChange={(event) => setVenueFilter(event.target.value)}>
+              <select value={venueFilter} onChange={(event) => updateFilters({ venueFilter: event.target.value })}>
                 <option value="all">全部会刊</option>
                 <option value="conference">顶会</option>
                 <option value="journal">期刊</option>
+                <option value="preprint">预印本</option>
                 <option value="wechat">公众号</option>
                 <option value="other">其他</option>
               </select>
-              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <select value={statusFilter} onChange={(event) => updateFilters({ statusFilter: event.target.value })}>
                 <option value="all">全部状态</option>
                 <option value="candidate">候选</option>
                 <option value="reading">待读</option>
@@ -774,22 +959,52 @@ function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus
                 <option value="shared">已分享</option>
                 <option value="rejected">驳回</option>
               </select>
-              <select value={translationFilter} onChange={(event) => setTranslationFilter(event.target.value)}>
+              <select value={translationFilter} onChange={(event) => updateFilters({ translationFilter: event.target.value })}>
                 <option value="all">翻译状态</option>
                 <option value="translated">已翻译</option>
                 <option value="untranslated">未翻译</option>
               </select>
-              <select value={aiFilter} onChange={(event) => setAiFilter(event.target.value)}>
+              <select value={aiFilter} onChange={(event) => updateFilters({ aiFilter: event.target.value })}>
                 <option value="all">解读状态</option>
                 <option value="generated">已解读</option>
                 <option value="missing">未解读</option>
               </select>
+              {page === 'today' && (
+                <select value={batchFilter} onChange={(event) => updateFilters({ batchFilter: event.target.value })}>
+                  <option value="all">全部批次</option>
+                  {batchOptions.map((batch) => (
+                    <option key={batch || 'empty'} value={batch}>{formatBatchLabel(batch)}</option>
+                  ))}
+                </select>
+              )}
+              <label className="toggleFilter">
+                <input type="checkbox" checked={pendingOnly} onChange={(event) => updateFilters({ pendingOnly: event.target.checked })} />
+                <span>只看未处理</span>
+              </label>
             </div>
           </div>
+          {page === 'latest' && (
+            <div className="bulkBox">
+              <label className="toggleFilter bulkSelectAll">
+                <input type="checkbox" checked={allFilteredSelected} onChange={toggleSelectAll} />
+                <span>全选当前</span>
+              </label>
+              <span className="bulkCount">已选 {selectedIds.length} 篇</span>
+              <button className="secondary" onClick={() => handleBulkStatus('reading')} disabled={busy || !selectedIds.length}>
+                标记待读
+              </button>
+              <button className="secondary" onClick={() => handleBulkStatus('selected')} disabled={busy || !selectedIds.length}>
+                标记已选
+              </button>
+              <button className="secondary" onClick={() => handleBulkStatus('rejected')} disabled={busy || !selectedIds.length}>
+                批量驳回
+              </button>
+            </div>
+          )}
           {page === 'selected' && (
             <div className="exportBox">
               <label>
-                <input type="checkbox" checked={markShared} onChange={(event) => setMarkShared(event.target.checked)} />
+                <input type="checkbox" checked={markShared} onChange={(event) => updateFilters({ markShared: event.target.checked })} />
                 导出后标记已分享
               </label>
               <button className="secondary" onClick={() => exportMarkdown(markShared)}>
@@ -798,28 +1013,53 @@ function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus
               </button>
             </div>
           )}
-          {(page === 'history' || page === 'selected') && (
+          {(page === 'today' || page === 'reading' || page === 'selected' || page === 'history') && (
             <form className="importBox" onSubmit={importArticleUrl}>
-              <div className="searchBox importUrlBox">
-                <Link2 size={17} />
-                <input
+              <div className="importUrlBox">
+                <div className="importUrlHead">
+                  <Link2 size={17} />
+                  <span>导入论文链接</span>
+                </div>
+                <textarea
                   value={importUrl}
                   onChange={(event) => setImportUrl(event.target.value)}
-                  placeholder={page === 'selected' ? '粘贴论文链接并导入已选文章' : '粘贴论文链接并导入历史库'}
+                  placeholder={
+                    page === 'selected'
+                      ? '每行一个链接，导入到已选文章'
+                      : page === 'reading'
+                        ? '每行一个链接，导入到待读论文'
+                        : page === 'today'
+                          ? '每行一个链接，导入到候选池'
+                          : '每行一个链接，导入到历史库'
+                  }
                 />
               </div>
-              <button className="secondary" disabled={busy || !importUrl.trim()}>
+              <button className="secondary" disabled={busy || !parseImportUrls(importUrl).length}>
                 <FileUp size={17} />
-                导入链接
+                批量导入
               </button>
             </form>
           )}
         </div>
         <div className="articleList">
           {filteredArticles.map((article) => (
-            <ArticleRow key={article.id} article={article} openDetail={openDetail} changeStatus={changeStatus} />
+            <ArticleRow
+              key={article.id}
+              article={article}
+              openDetail={openDetail}
+              changeStatus={changeStatus}
+              selectable={selectable}
+              selected={selectedIds.includes(article.id)}
+              toggleSelected={toggleSelected}
+            />
           ))}
-          {!filteredArticles.length && <div className="empty">没有匹配的条目，可以调整筛选条件或导入论文链接。</div>}
+          {!filteredArticles.length && (
+            <div className="empty">
+              {page === 'latest'
+                ? '最近一次抓取还没有新增候选，先执行一次抓取，或检查本次结果是否都被去重/过滤。'
+                : '没有匹配的条目，可以调整筛选条件或导入论文链接。'}
+            </div>
+          )}
         </div>
       </section>
       <aside className="metrics">
@@ -842,14 +1082,19 @@ function ArticlePage({ page, articles, query, setQuery, openDetail, changeStatus
   );
 }
 
-function ArticleRow({ article, openDetail, changeStatus }) {
+function ArticleRow({ article, openDetail, changeStatus, selectable = false, selected = false, toggleSelected = () => {} }) {
   const StatusIcon = UI_STATUS_META[article.status]?.icon ?? ListFilter;
   const badges = getSourceBadges(article);
   const englishTitle = article.title?.trim();
   const translatedTitle = article.translated_title?.trim();
   const displayTitle = englishTitle || translatedTitle || '未命名论文';
   return (
-    <article className="articleRow" onClick={() => openDetail(article)}>
+    <article className={selectable ? 'articleRow selectable' : 'articleRow'} onClick={() => openDetail(article)}>
+      {selectable && (
+        <label className="rowSelector" onClick={(event) => event.stopPropagation()}>
+          <input type="checkbox" checked={selected} onChange={() => toggleSelected(article.id)} />
+        </label>
+      )}
       <div className="score">{article.score}</div>
       <div className="articleMain">
         <h2>{displayTitle}</h2>
@@ -859,6 +1104,8 @@ function ArticleRow({ article, openDetail, changeStatus }) {
           <span className={`venueBadge ${badges.venue.tone}`}>{badges.venue.label}</span>
           <span>{article.source || '未知来源'}</span>
           <span>{article.published || '无日期'}</span>
+          <span>首次发现 {formatDateTime(article.created_at)}</span>
+          <span>最近抓取 {formatDateTime(article.last_fetch_at)}</span>
           <span className={`status ${article.status}`}>
             <StatusIcon size={14} />
             {UI_STATUS_META[article.status]?.label}
@@ -924,6 +1171,8 @@ function DetailPage({ article, changeStatus, close }) {
         <span className={`venueBadge ${badges.venue.tone}`}>{badges.venue.label}</span>
         <span>{article.source}</span>
         <span>{article.published || '无日期'}</span>
+        <span>首次发现 {formatDateTime(article.created_at)}</span>
+        <span>最近抓取 {formatDateTime(article.last_fetch_at)}</span>
         <span>{UI_STATUS_META[article.status]?.label}</span>
       </div>
       <StatusButtons article={article} changeStatus={changeStatus} />
@@ -1103,6 +1352,7 @@ function ConfigPage({ config, draft, setDraft, saveConfig, aiConfig, setAIConfig
   const visibleKeys = filteredSources.map((source) => source.key);
   const conferenceKeys = sourceCatalog.filter((source) => source.category === 'conference').map((source) => source.key);
   const journalKeys = sourceCatalog.filter((source) => source.category === 'journal').map((source) => source.key);
+  const preprintKeys = sourceCatalog.filter((source) => source.category === 'preprint').map((source) => source.key);
 
   return (
     <div className="settingsStack">
@@ -1131,6 +1381,9 @@ function ConfigPage({ config, draft, setDraft, saveConfig, aiConfig, setAIConfig
           </button>
           <button type="button" className="secondary" onClick={() => setBatchSelection(journalKeys, true)} disabled={!parsedDraft || !journalKeys.length}>
             {'\u5168\u9009\u671f\u520a'}
+          </button>
+          <button type="button" className="secondary" onClick={() => setBatchSelection(preprintKeys, true)} disabled={!parsedDraft || !preprintKeys.length}>
+            {'\u5168\u9009\u9884\u5370\u672c'}
           </button>
         </div>
         <div className="sourceList">
@@ -1299,20 +1552,79 @@ const LOG_ACTION_META = {
 function formatLogSummary(log) {
   if (log.action_type === 'translate' || log.action_type === 'ai' || log.action_type === 'enrich') {
     const scope = log.source_counts?.scope || 'all';
+    const latestFetchOnly = Boolean(log.source_counts?.latest_fetch_only);
     const scopeLabel = scope === 'single'
       ? '\u5355\u7bc7'
       : scope === 'all'
         ? '\u5168\u90e8'
         : UI_STATUS_META[scope]?.label || scope;
-    return `范围 ${scopeLabel} / 待处理 ${log.candidates_total} / 成功 ${log.updated_count} / 失败 ${log.duplicate_count} / 跳过 ${log.filtered_count}`;
+    const rangeLabel = latestFetchOnly ? `本次抓取 / ${scopeLabel}` : scopeLabel;
+    return `范围 ${rangeLabel} / 待处理 ${log.candidates_total} / 成功 ${log.updated_count} / 失败 ${log.duplicate_count} / 跳过 ${log.filtered_count}`;
   }
   return `来源 ${JSON.stringify(log.source_counts)} / 候选 ${log.candidates_total} / 新增 ${log.inserted_count} / 更新 ${log.updated_count} / 过滤 ${log.filtered_count} / 去重 ${log.duplicate_count}`;
 }
 
 function LogsPage({ logs }) {
+  const [filters, setFilters] = React.useState(() => loadUIState('privacy-radar-log-filters', {
+    actionType: 'all',
+    status: 'all',
+    query: '',
+  }));
+
+  React.useEffect(() => {
+    saveUIState('privacy-radar-log-filters', filters);
+  }, [filters]);
+
+  const filteredLogs = React.useMemo(() => {
+    const keyword = filters.query.trim().toLowerCase();
+    return logs.filter((log) => {
+      if (filters.actionType !== 'all' && (log.action_type || 'fetch') !== filters.actionType) return false;
+      if (filters.status !== 'all' && log.status !== filters.status) return false;
+      if (!keyword) return true;
+      const haystack = [
+        log.message,
+        formatLogSummary(log),
+        ...(Array.isArray(log.failures) ? log.failures : []),
+      ]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(keyword);
+    });
+  }, [filters, logs]);
+
   return (
     <section className="logs">
-      {logs.map((log) => (
+      <div className="toolstrip toolstripFilters logToolbar">
+        <div className="filterStack">
+          <div className="searchBox">
+            <Search size={17} />
+            <input
+              value={filters.query}
+              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              placeholder="搜索日志消息或失败原因"
+            />
+          </div>
+          <div className="filterRow">
+            <select value={filters.actionType} onChange={(event) => setFilters((current) => ({ ...current, actionType: event.target.value }))}>
+              <option value="all">全部动作</option>
+              {Object.entries(LOG_ACTION_META).map(([key, label]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
+            <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
+              <option value="all">全部状态</option>
+              <option value="success">成功</option>
+              <option value="partial">部分成功</option>
+              <option value="failed">失败</option>
+            </select>
+          </div>
+        </div>
+        <div className="logMetrics">
+          <span>当前 {filteredLogs.length} 条</span>
+          <span>失败 {filteredLogs.filter((log) => log.status === 'failed').length} 条</span>
+        </div>
+      </div>
+      {filteredLogs.map((log) => (
         <article className="logRow" key={log.id}>
           <div>
             <strong>{LOG_ACTION_META[log.action_type] || '\u6293\u53d6'} · {log.status}</strong>
@@ -1320,10 +1632,15 @@ function LogsPage({ logs }) {
           </div>
           <p>{log.message}</p>
           <code>{formatLogSummary(log)}</code>
-          {log.failures?.length > 0 && <pre>{log.failures.join('\n')}</pre>}
+          {log.failures?.length > 0 && (
+            <details className="logFailures">
+              <summary>失败详情（{log.failures.length}）</summary>
+              <pre>{log.failures.join('\n')}</pre>
+            </details>
+          )}
         </article>
       ))}
-      {!logs.length && <div className="empty">暂无运行日志。</div>}
+      {!filteredLogs.length && <div className="empty">当前筛选条件下没有运行日志。</div>}
     </section>
   );
 }

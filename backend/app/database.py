@@ -14,8 +14,8 @@ DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "privacy_papers.sqlite3"
 VALID_STATUSES = {"candidate", "reading", "selected", "shared", "rejected"}
 STATUS_PRIORITY = {
-    "rejected": 0,
-    "candidate": 1,
+    "candidate": 0,
+    "rejected": 1,
     "shared": 2,
     "reading": 3,
     "selected": 4,
@@ -66,6 +66,8 @@ def init_db() -> None:
                 score INTEGER DEFAULT 0,
                 reasons_json TEXT DEFAULT '[]',
                 status TEXT NOT NULL DEFAULT 'candidate',
+                fetch_batch TEXT DEFAULT '',
+                last_fetch_at TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 shared_at TEXT
@@ -117,12 +119,29 @@ def ensure_article_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE articles ADD COLUMN translated_summary TEXT DEFAULT ''")
     if "ai_recommendation" not in columns:
         conn.execute("ALTER TABLE articles ADD COLUMN ai_recommendation TEXT DEFAULT ''")
+    if "fetch_batch" not in columns:
+        conn.execute("ALTER TABLE articles ADD COLUMN fetch_batch TEXT DEFAULT ''")
+        conn.execute("UPDATE articles SET fetch_batch = created_at WHERE fetch_batch = '' OR fetch_batch IS NULL")
+    if "last_fetch_at" not in columns:
+        conn.execute("ALTER TABLE articles ADD COLUMN last_fetch_at TEXT DEFAULT ''")
+        conn.execute(
+            """
+            UPDATE articles
+            SET last_fetch_at = CASE
+                WHEN fetch_batch IS NOT NULL AND fetch_batch != '' THEN fetch_batch
+                ELSE created_at
+            END
+            WHERE last_fetch_at = '' OR last_fetch_at IS NULL
+            """
+        )
 
 
 def ensure_run_log_columns(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(run_logs)").fetchall()}
     if "action_type" not in columns:
         conn.execute("ALTER TABLE run_logs ADD COLUMN action_type TEXT DEFAULT 'fetch'")
+    if "batch_token" not in columns:
+        conn.execute("ALTER TABLE run_logs ADD COLUMN batch_token TEXT DEFAULT ''")
 
 
 def text_quality(value: str) -> tuple[int, int, int]:
@@ -293,12 +312,13 @@ def collapse_duplicate_rows(conn: sqlite3.Connection, preferred_id: int | None, 
     merged_published = keeper["published"] or prefer_longer(*[row["published"] for row in rows])
     merged_translated_title = keeper["translated_title"] or prefer_longer(*[row["translated_title"] for row in rows])
     merged_translated_summary = keeper["translated_summary"] or prefer_longer(*[row["translated_summary"] for row in rows])
+    merged_fetch_batch = keeper["fetch_batch"] or prefer_longer(*[row["fetch_batch"] for row in rows])
     merged_score = max(int(row["score"] or 0) for row in rows)
     conn.execute(
         """
         UPDATE articles
         SET title = ?, title_norm = ?, source = ?, source_type = ?, published = ?, summary = ?, authors = ?,
-            score = ?, reasons_json = ?, status = ?, shared_at = ?, translated_title = ?, translated_summary = ?,
+            score = ?, reasons_json = ?, status = ?, fetch_batch = ?, shared_at = ?, translated_title = ?, translated_summary = ?,
             ai_recommendation = ?, updated_at = ?
         WHERE id = ?
         """,
@@ -313,6 +333,7 @@ def collapse_duplicate_rows(conn: sqlite3.Connection, preferred_id: int | None, 
             merged_score,
             json.dumps(merged_reasons, ensure_ascii=False),
             merged_status,
+            merged_fetch_batch,
             shared_at,
             merged_translated_title,
             merged_translated_summary,
@@ -364,6 +385,7 @@ def list_articles_needing_ai(
     require_title: bool = True,
     require_summary: bool = True,
     require_recommendation: bool = True,
+    latest_fetch_only: bool = False,
 ) -> list[dict]:
     needs = []
     if require_title:
@@ -377,9 +399,14 @@ def list_articles_needing_ai(
     if status and status != "all":
         clauses.insert(0, "status = ?")
         params.append(status)
-    params.append(limit)
-    where = " AND ".join(clauses)
     with connect() as conn:
+        if latest_fetch_only:
+            batch_token = latest_fetch_batch_token(conn)
+            if batch_token:
+                clauses.insert(0, "fetch_batch = ?")
+                params.insert(0, batch_token)
+        params.append(limit)
+        where = " AND ".join(clauses)
         rows = conn.execute(
             f"""
             SELECT * FROM articles
@@ -398,6 +425,8 @@ def all_seen(conn: sqlite3.Connection) -> tuple[set[str], set[str]]:
         SELECT title_norm, url_norm FROM shared_history
         UNION
         SELECT title_norm, url_norm FROM articles WHERE status = 'shared'
+        UNION
+        SELECT title_norm, url_norm FROM articles WHERE status = 'rejected'
         """
     ).fetchall()
     return {r["title_norm"] for r in title_rows if r["title_norm"]}, {r["url_norm"] for r in title_rows if r["url_norm"]}
@@ -416,8 +445,15 @@ def find_existing(conn: sqlite3.Connection, title_norm: str, url_norm: str) -> s
     return conn.execute("SELECT * FROM articles WHERE title_norm = ? LIMIT 1", (title_norm,)).fetchone()
 
 
-def save_candidates(candidates: Iterable[Candidate], config: dict, min_score: int, max_age_days: int) -> dict:
+def save_candidates(
+    candidates: Iterable[Candidate],
+    config: dict,
+    min_score: int,
+    max_age_days: int,
+    fetch_batch: str | None = None,
+) -> dict:
     stats = {"inserted": 0, "updated": 0, "filtered": 0, "duplicates": 0}
+    batch_token = fetch_batch or now()
     ranked: list[Candidate] = []
     for candidate in candidates:
         score_candidate(candidate, config)
@@ -442,7 +478,7 @@ def save_candidates(candidates: Iterable[Candidate], config: dict, min_score: in
                     """
                     UPDATE articles
                     SET title = ?, url = ?, source = ?, source_type = ?, published = ?,
-                        summary = ?, authors = ?, score = ?, reasons_json = ?, updated_at = ?
+                        summary = ?, authors = ?, score = ?, reasons_json = ?, last_fetch_at = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -455,6 +491,7 @@ def save_candidates(candidates: Iterable[Candidate], config: dict, min_score: in
                         item.authors,
                         item.score,
                         json.dumps(item.reasons, ensure_ascii=False),
+                        batch_token,
                         now(),
                         existing["id"],
                     ),
@@ -469,8 +506,8 @@ def save_candidates(candidates: Iterable[Candidate], config: dict, min_score: in
                 """
                 INSERT INTO articles
                 (title, title_norm, url, url_norm, source, source_type, published, summary,
-                 authors, score, reasons_json, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?)
+                 authors, score, reasons_json, status, fetch_batch, last_fetch_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?)
                 """,
                 (
                     item.title,
@@ -484,6 +521,8 @@ def save_candidates(candidates: Iterable[Candidate], config: dict, min_score: in
                     item.authors,
                     item.score,
                     json.dumps(item.reasons, ensure_ascii=False),
+                    batch_token,
+                    batch_token,
                     now(),
                     now(),
                 ),
@@ -515,7 +554,7 @@ def upsert_imported_candidate(candidate: Candidate, status: str = "shared") -> t
                 UPDATE articles
                 SET title = ?, title_norm = ?, url = ?, url_norm = ?, source = ?, source_type = ?,
                     published = ?, summary = ?, authors = ?, score = ?, reasons_json = ?,
-                    status = ?, shared_at = ?, updated_at = ?
+                    status = ?, last_fetch_at = ?, shared_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -531,6 +570,7 @@ def upsert_imported_candidate(candidate: Candidate, status: str = "shared") -> t
                     candidate.score,
                     json.dumps(candidate.reasons, ensure_ascii=False),
                     status,
+                    existing["last_fetch_at"] or timestamp,
                     shared_at,
                     timestamp,
                     existing["id"],
@@ -543,8 +583,8 @@ def upsert_imported_candidate(candidate: Candidate, status: str = "shared") -> t
                 """
                 INSERT INTO articles
                 (title, title_norm, url, url_norm, source, source_type, published, summary,
-                 authors, score, reasons_json, status, created_at, updated_at, shared_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 authors, score, reasons_json, status, last_fetch_at, created_at, updated_at, shared_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     candidate.title,
@@ -561,6 +601,7 @@ def upsert_imported_candidate(candidate: Candidate, status: str = "shared") -> t
                     status,
                     timestamp,
                     timestamp,
+                    timestamp,
                     shared_at,
                 ),
             )
@@ -573,7 +614,25 @@ def upsert_imported_candidate(candidate: Candidate, status: str = "shared") -> t
         return row_to_article(row), created
 
 
-def list_articles(status: str | None = None, query: str | None = None) -> list[dict]:
+def latest_fetch_batch_token(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        """
+        SELECT batch_token
+        FROM run_logs
+        WHERE action_type = 'fetch' AND batch_token != '' AND status IN ('success', 'partial')
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return (row["batch_token"] or "").strip() if row else ""
+
+
+def list_articles(
+    status: str | None = None,
+    query: str | None = None,
+    today_only: bool = False,
+    latest_fetch_only: bool = False,
+) -> list[dict]:
     clauses = []
     params: list[str] = []
     if status:
@@ -582,8 +641,16 @@ def list_articles(status: str | None = None, query: str | None = None) -> list[d
     if query:
         clauses.append("(title LIKE ? OR translated_title LIKE ? OR summary LIKE ? OR source LIKE ?)")
         params.extend([f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"])
-    where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with connect() as conn:
+        if latest_fetch_only or today_only:
+            batch_token = latest_fetch_batch_token(conn)
+            if batch_token:
+                clauses.append("fetch_batch = ?")
+                params.append(batch_token)
+            else:
+                clauses.append("created_at LIKE ?")
+                params.append(f"{dt.date.today().isoformat()}%")
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
         rows = conn.execute(
             f"SELECT * FROM articles {where} ORDER BY score DESC, published DESC, updated_at DESC",
             params,
@@ -665,6 +732,7 @@ def create_log(
     status: str,
     message: str,
     action_type: str = "fetch",
+    batch_token: str = "",
 ) -> dict:
     with connect() as conn:
         ensure_run_log_columns(conn)
@@ -672,8 +740,8 @@ def create_log(
             """
             INSERT INTO run_logs
             (started_at, finished_at, status, source_counts_json, failures_json, candidates_total,
-             inserted_count, updated_count, filtered_count, duplicate_count, message, action_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             inserted_count, updated_count, filtered_count, duplicate_count, message, action_type, batch_token)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now(),
@@ -688,6 +756,7 @@ def create_log(
                 stats.get("duplicates", 0),
                 message,
                 action_type,
+                batch_token,
             ),
         )
         row = conn.execute("SELECT * FROM run_logs WHERE id = ?", (cur.lastrowid,)).fetchone()

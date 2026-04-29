@@ -151,6 +151,7 @@ DEFAULT_CONFIG = {
         },
     ],
     "enabled_fetch_sources": [
+        "arxiv",
         "ieee_sp",
         "acm_ccs",
         "usenix_security",
@@ -171,6 +172,13 @@ DEFAULT_CONFIG = {
 
 
 FETCH_SOURCE_CATALOG = [
+    {
+        "key": "arxiv",
+        "name": "arXiv cs.CR",
+        "category": "preprint",
+        "tier": "Preprint",
+        "source_ids": [],
+    },
     {
         "key": "ieee_sp",
         "name": "IEEE Symposium on Security and Privacy",
@@ -476,64 +484,104 @@ def infer_import_source(host: str, meta: dict[str, list[str]], raw_text: str = "
     return host, "search"
 
 
+def extract_doi_from_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(html.unescape(url.strip()))
+    host = parsed.netloc.lower()
+    path = parsed.path.strip()
+    doi = ""
+    if host == "doi.org":
+        doi = path.lstrip("/")
+    elif host.endswith("dl.acm.org"):
+        match = re.search(r"^/doi/(?:abs/|full/|pdf/)?(10\.\d{4,9}/.+)$", path, flags=re.I)
+        if match:
+            doi = match.group(1)
+    else:
+        match = re.search(r"/(10\.\d{4,9}/[^?#]+)", path, flags=re.I)
+        if match:
+            doi = match.group(1)
+    doi = doi.strip().strip("/")
+    if doi.lower().endswith(".pdf"):
+        doi = doi[:-4]
+    return urllib.parse.unquote(doi)
+
+
+def candidate_from_doi_metadata(url: str) -> Candidate | None:
+    doi = extract_doi_from_url(url)
+    if not doi:
+        return None
+    api_url = "https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="")
+    data = json.loads(fetch_text(api_url))
+    item = data.get("message") or {}
+    candidate = crossref_item_to_candidate(item)
+    if not candidate:
+        return None
+    candidate.url = canonical_url(url)
+    return candidate
+
+
 def candidate_from_url(url: str, config: dict) -> Candidate:
     parsed = urllib.parse.urlsplit(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("URL must start with http:// or https://")
 
-    text = fetch_text(url)
-    parser = PageMetadataParser()
-    parser.feed(text[:1_500_000])
+    try:
+        candidate = candidate_from_doi_metadata(url)
+    except Exception:
+        candidate = None
+    if candidate is None:
+        text = fetch_text(url)
+        parser = PageMetadataParser()
+        parser.feed(text[:1_500_000])
 
-    title = first_meta(
-        parser.meta,
-        "citation_title",
-        "dc.title",
-        "dcterms.title",
-        "og:title",
-        "twitter:title",
-    ) or parser.title
-    title = re.sub(r"\s+", " ", title).strip()
-    if not title:
-        raise ValueError("Unable to extract a paper title from this URL")
-
-    summary = first_meta(
-        parser.meta,
-        "citation_abstract",
-        "dc.description",
-        "dcterms.description",
-        "description",
-        "og:description",
-        "twitter:description",
-    )
-    published = parse_date(
-        first_meta(
+        title = first_meta(
             parser.meta,
-            "citation_publication_date",
-            "citation_online_date",
-            "citation_date",
-            "article:published_time",
-            "dc.date",
-            "dcterms.issued",
-        )
-    )
-    authors = "; ".join(parser.meta.get("citation_author", [])[:8]) or first_meta(
-        parser.meta,
-        "dc.creator",
-        "author",
-        "article:author",
-    )
-    source, source_type = infer_import_source(parsed.netloc.lower(), parser.meta, text)
+            "citation_title",
+            "dc.title",
+            "dcterms.title",
+            "og:title",
+            "twitter:title",
+        ) or parser.title
+        title = re.sub(r"\s+", " ", title).strip()
+        if not title:
+            raise ValueError("Unable to extract a paper title from this URL")
 
-    candidate = Candidate(
-        title=title,
-        url=canonical_url(url),
-        source=source,
-        source_type=source_type,
-        published=published,
-        summary=summary,
-        authors=authors,
-    )
+        summary = first_meta(
+            parser.meta,
+            "citation_abstract",
+            "dc.description",
+            "dcterms.description",
+            "description",
+            "og:description",
+            "twitter:description",
+        )
+        published = parse_date(
+            first_meta(
+                parser.meta,
+                "citation_publication_date",
+                "citation_online_date",
+                "citation_date",
+                "article:published_time",
+                "dc.date",
+                "dcterms.issued",
+            )
+        )
+        authors = "; ".join(parser.meta.get("citation_author", [])[:8]) or first_meta(
+            parser.meta,
+            "dc.creator",
+            "author",
+            "article:author",
+        )
+        source, source_type = infer_import_source(parsed.netloc.lower(), parser.meta, text)
+
+        candidate = Candidate(
+            title=title,
+            url=canonical_url(url),
+            source=source,
+            source_type=source_type,
+            published=published,
+            summary=summary,
+            authors=authors,
+        )
     score_candidate(candidate, config)
     candidate.reasons.append("Manual URL import")
     return candidate
@@ -575,6 +623,8 @@ def canonical_url(value: str) -> str:
         path = path.replace("/abstract/document/", "/document/")
     elif host.endswith("dl.acm.org"):
         path = path.replace("/doi/abs/", "/doi/")
+        path = path.replace("/doi/full/", "/doi/")
+        path = re.sub(r"^/doi/pdf/(.+?)(?:\.pdf)?$", r"/doi/\1", path)
     elif host == "doi.org":
         path = path.lower()
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=False)
@@ -894,11 +944,15 @@ def authors_from_authorships(authorships: list[dict] | None) -> str:
     return ", ".join(names)
 
 
-def enabled_fetch_sources(config: dict) -> list[dict]:
+def enabled_fetch_source_keys(config: dict) -> set[str]:
     selected = config.get("enabled_fetch_sources")
     if not isinstance(selected, list):
-        return list(FETCH_SOURCE_CATALOG)
-    selected_keys = {str(item).strip() for item in selected if str(item).strip()}
+        return {spec["key"] for spec in FETCH_SOURCE_CATALOG}
+    return {str(item).strip() for item in selected if str(item).strip()}
+
+
+def enabled_fetch_sources(config: dict) -> list[dict]:
+    selected_keys = enabled_fetch_source_keys(config)
     return [spec for spec in FETCH_SOURCE_CATALOG if spec["key"] in selected_keys]
 
 
@@ -1096,11 +1150,30 @@ def collect_candidates(config: dict, rows: int, days: int) -> tuple[list[Candida
 
 
 def collect_candidates(config: dict, rows: int, days: int) -> tuple[list[Candidate], dict, list[str]]:
-    source_specs = enabled_fetch_sources(config)
-    if not source_specs:
+    selected_keys = enabled_fetch_source_keys(config)
+    if not selected_keys:
         return [], {}, []
-    try:
-        candidates, source_counts = fetch_openalex_sources(source_specs, rows, days)
-        return candidates, source_counts, []
-    except Exception as exc:
-        return [], {}, [f"OpenAlex fetch failed: {exc}"]
+
+    candidates: list[Candidate] = []
+    source_counts: dict[str, int] = {}
+    failures: list[str] = []
+
+    if "arxiv" in selected_keys:
+        try:
+            items = fetch_arxiv(rows)
+            candidates.extend(items)
+            source_counts["arXiv"] = len(items)
+        except Exception as exc:
+            source_counts["arXiv"] = 0
+            failures.append(f"arXiv 抓取失败：{exc}")
+
+    source_specs = [spec for spec in enabled_fetch_sources(config) if spec["key"] != "arxiv"]
+    if source_specs:
+        try:
+            openalex_candidates, openalex_counts = fetch_openalex_sources(source_specs, rows, days)
+            candidates.extend(openalex_candidates)
+            source_counts.update(openalex_counts)
+        except Exception as exc:
+            failures.append(f"OpenAlex 抓取失败：{exc}")
+
+    return candidates, source_counts, failures
